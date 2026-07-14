@@ -1,0 +1,82 @@
+import type { FastifyRequest } from "fastify";
+import { normalizeHeaderName, rawHeaderValues } from "./request-id.js";
+import { attachTracestate, parseTraceparent } from "./trace.js";
+import type {
+  ExtraFields,
+  FastifyObservabilityOptions,
+  LevelForStatus,
+  LoggingPreset,
+  RequestObservability,
+} from "./types.js";
+
+export interface NormalizedOptions {
+  readonly preset: LoggingPreset;
+  readonly requestIdHeader: string;
+  readonly responseHeader: string | false;
+  readonly traceHeader: string;
+  readonly tracestateHeader: string;
+  readonly message: string;
+  readonly levelForStatus?: LevelForStatus;
+  readonly extraFields?: ExtraFields;
+}
+
+const PRESETS = new Set<LoggingPreset>(["default", "gcp", "aws", "azure"]);
+
+export function normalizeOptions(options: FastifyObservabilityOptions): NormalizedOptions {
+  const preset = options.preset ?? "default";
+  if (!PRESETS.has(preset)) {
+    throw new TypeError("preset must be default, gcp, aws, or azure");
+  }
+  const requestIdHeader = normalizeHeaderName(options.requestIdHeader ?? "x-request-id", "requestIdHeader");
+  const traceHeader = normalizeHeaderName(options.traceHeader ?? "traceparent", "traceHeader");
+  const tracestateHeader = normalizeHeaderName(options.tracestateHeader ?? "tracestate", "tracestateHeader");
+  const responseHeader =
+    options.responseHeader === false
+      ? false
+      : normalizeHeaderName(options.responseHeader ?? requestIdHeader, "responseHeader");
+  const inputHeaders = new Set([requestIdHeader, traceHeader, tracestateHeader]);
+  if (inputHeaders.size !== 3) {
+    throw new TypeError("requestIdHeader, traceHeader, and tracestateHeader must be distinct");
+  }
+  if (responseHeader !== false && (responseHeader === traceHeader || responseHeader === tracestateHeader)) {
+    throw new TypeError("responseHeader must not collide with trace headers");
+  }
+  const message = options.message ?? "request completed";
+  if (typeof message !== "string" || message.trim().length === 0) {
+    throw new TypeError("message must be a non-empty string");
+  }
+  if (options.levelForStatus !== undefined && typeof options.levelForStatus !== "function") {
+    throw new TypeError("levelForStatus must be a function");
+  }
+  if (options.extraFields !== undefined && typeof options.extraFields !== "function") {
+    throw new TypeError("extraFields must be a function");
+  }
+  const normalized: NormalizedOptions = {
+    preset,
+    requestIdHeader,
+    responseHeader,
+    traceHeader,
+    tracestateHeader,
+    message,
+  };
+  if (options.levelForStatus !== undefined) {
+    Object.defineProperty(normalized, "levelForStatus", { value: options.levelForStatus, enumerable: true });
+  }
+  if (options.extraFields !== undefined) {
+    Object.defineProperty(normalized, "extraFields", { value: options.extraFields, enumerable: true });
+  }
+  return Object.freeze(normalized);
+}
+
+export function createRequestObservability(request: FastifyRequest, options: NormalizedOptions): RequestObservability {
+  const traceparentValues = rawHeaderValues(request.raw, options.traceHeader);
+  let trace = traceparentValues.length === 1 ? parseTraceparent(traceparentValues[0]) : null;
+  if (trace !== null) {
+    trace = attachTracestate(trace, rawHeaderValues(request.raw, options.tracestateHeader));
+  }
+  return Object.freeze({
+    requestId: request.id,
+    correlationId: trace?.traceId ?? request.id,
+    traceContext: trace,
+  });
+}

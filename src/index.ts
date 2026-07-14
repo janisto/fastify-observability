@@ -1,0 +1,13 @@
+export { fastifyObservability as default, fastifyObservability } from "./plugin.js";
+export { createRequestIdGenerator, isValidRequestId } from "./request-id.js";
+export { parseTraceparent } from "./trace.js";
+export type {
+  AccessLogLevel,
+  ExtraFields,
+  FastifyObservabilityOptions,
+  LevelForStatus,
+  LoggingPreset,
+  RequestIdGeneratorOptions,
+  RequestObservability,
+  TraceContext,
+} from "./types.js";

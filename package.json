@@ -13,12 +13,24 @@
   "author": "Jani Mikkonen",
   "license": "MIT",
   "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
   "engines": {
     "node": "24"
   },
-  "peerDependencies": {
-    "fastify": "^5.10.0"
-  },
+  "packageManager": "pnpm@11.13.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/janisto/fastify-observability.git"
@@ -30,5 +42,38 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "clean": "node scripts/clean.mjs dist coverage",
+    "clean:artifacts": "node scripts/clean.mjs artifacts --create",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "benchmark": "tsx benchmarks/request.ts",
+    "policy:dependencies": "node scripts/policy-dependencies.mjs",
+    "qa:source": "pnpm policy:dependencies && pnpm check && pnpm typecheck && pnpm test:coverage && pnpm build",
+    "qa:package": "node scripts/qa-package.mjs",
+    "qa": "node scripts/qa.mjs"
+  },
+  "dependencies": {
+    "fastify-plugin": "^6.0.0"
+  },
+  "peerDependencies": {
+    "fastify": "^5.10.0"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
+    "@biomejs/biome": "2.5.3",
+    "@types/node": "24.13.3",
+    "@vitest/coverage-v8": "4.1.10",
+    "fastify": "5.10.0",
+    "publint": "0.3.21",
+    "tsx": "4.23.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
   }
 }

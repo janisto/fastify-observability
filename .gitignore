@@ -1,4 +1,3 @@
-# Logs
 logs
 *.log
 npm-debug.log*
@@ -8,3 +7,12 @@ lerna-debug.log*
 
 # plans
 plans/
+
+# generated package paths
+node_modules/
+dist/
+coverage/
+artifacts/
+*.tgz
+*.tsbuildinfo
+.pnpm-store/
