@@ -6,9 +6,5 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
-# other
-artifacts/
-coverage/
-dist/
-node_modules/
+# plans
 plans/
