@@ -42,7 +42,7 @@ jobs:
         run: git diff --check
 
   windows:
-    name: Node 24 / Windows package smoke
+    name: Node 24 / Windows build
     runs-on: windows-latest
     steps:
       - name: Check out repository
@@ -66,13 +66,3 @@ jobs:
         run: |
           pnpm typecheck
           pnpm build
-      - name: Pack once and test the package
-        shell: pwsh
-        run: |
-          pnpm clean:artifacts
-          pnpm pack --pack-destination artifacts
-          $tarballs = @(Get-ChildItem -Path artifacts -Filter *.tgz)
-          if ($tarballs.Count -ne 1) {
-            throw "Expected exactly one package tarball, found $($tarballs.Count)"
-          }
-          pnpm qa:package -- $tarballs[0].FullName

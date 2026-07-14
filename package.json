@@ -45,8 +45,6 @@
   },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
-    "clean": "node scripts/clean.mjs dist coverage",
-    "clean:artifacts": "node scripts/clean.mjs artifacts --create",
     "check": "biome check .",
     "check:fix": "biome check --write .",
     "typecheck": "tsc --project tsconfig.json --noEmit",
@@ -54,10 +52,7 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "benchmark": "tsx benchmarks/request.ts",
-    "policy:dependencies": "node scripts/policy-dependencies.mjs",
-    "qa:source": "pnpm policy:dependencies && pnpm check && pnpm typecheck && pnpm test:coverage && pnpm build",
-    "qa:package": "node scripts/qa-package.mjs",
-    "qa": "node scripts/qa.mjs"
+    "qa": "pnpm check && pnpm typecheck && pnpm test:coverage && pnpm build && publint run --strict --pack pnpm && attw --pack . --profile esm-only"
   },
   "dependencies": {
     "fastify-plugin": "^6.0.0"

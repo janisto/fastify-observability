@@ -222,7 +222,7 @@ pnpm qa
 
 The complete gate covers formatting/lint, strict TypeScript, unit and real
 HTTP/1.1/HTTP/2 behavior, 90% global coverage thresholds, build output,
-package metadata, `publint`, `attw`, and a clean tarball consumer.
+package metadata, `publint`, and `attw`.
 
 ## License
 
