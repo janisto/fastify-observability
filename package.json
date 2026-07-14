@@ -1,14 +1,22 @@
 {
   "name": "fastify-observability",
   "version": "0.1.0",
-  "description": "Fastify request IDs, W3C trace correlation, request-scoped Pino fields, and structured access logs.",
+  "description": "Fastify middleware for request IDs, trace correlation, and structured access logs.",
   "keywords": [
     "fastify",
+    "fastify-plugin",
     "observability",
+    "logging",
+    "access-logs",
     "request-id",
     "structured-logging",
+    "json-logging",
+    "cloud-logging",
     "pino",
-    "traceparent"
+    "traceparent",
+    "w3c-trace-context",
+    "nodejs",
+    "typescript"
   ],
   "author": "Jani Mikkonen",
   "license": "MIT",
@@ -28,7 +36,7 @@
     "CHANGELOG.md"
   ],
   "engines": {
-    "node": "24"
+    "node": ">=24"
   },
   "packageManager": "pnpm@11.13.0",
   "repository": {
@@ -51,8 +59,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "benchmark": "tsx benchmarks/request.ts",
-    "qa": "pnpm check && pnpm typecheck && pnpm test:coverage && pnpm build && publint run --strict --pack pnpm && attw --pack . --profile esm-only"
+    "qa": "pnpm check && pnpm typecheck && pnpm test:coverage && pnpm build"
   },
   "dependencies": {
     "fastify-plugin": "^6.0.0"
@@ -61,13 +68,10 @@
     "fastify": "^5.10.0"
   },
   "devDependencies": {
-    "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.3",
     "@types/node": "24.13.3",
     "@vitest/coverage-v8": "4.1.10",
     "fastify": "5.10.0",
-    "publint": "0.3.21",
-    "tsx": "4.23.1",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
   }

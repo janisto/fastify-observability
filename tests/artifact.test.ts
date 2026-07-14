@@ -9,7 +9,7 @@ describe("package contract", () => {
       version: "0.1.0",
       type: "module",
       sideEffects: false,
-      engines: { node: "24" },
+      engines: { node: ">=24" },
       packageManager: "pnpm@11.13.0",
       dependencies: { "fastify-plugin": "^6.0.0" },
       peerDependencies: { fastify: "^5.10.0" },

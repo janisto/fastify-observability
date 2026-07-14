@@ -208,7 +208,7 @@ actually trusts.
 
 ## Compatibility and stability
 
-The package is ESM-only, supports Node 24 and Fastify `^5.10.0`, and follows
+The package is ESM-only, supports Node 24 or newer and Fastify `^5.10.0`, and follows
 semantic versioning. During `0.x`, public types, option behavior, and structured
 field changes are called out in the changelog. Deep imports are unsupported.
 
@@ -221,8 +221,7 @@ pnpm qa
 ```
 
 The complete gate covers formatting/lint, strict TypeScript, unit and real
-HTTP/1.1/HTTP/2 behavior, 90% global coverage thresholds, build output,
-package metadata, `publint`, and `attw`.
+HTTP/1.1/HTTP/2 behavior, 90% global coverage thresholds, and build output.
 
 ## License
 

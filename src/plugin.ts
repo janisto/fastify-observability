@@ -169,7 +169,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
   }
 };
 
-export const fastifyObservability = fp(implementation, { fastify: "5.x", name: "fastify-observability" });
+export const fastifyObservability = fp(implementation, { fastify: "^5.10.0", name: "fastify-observability" });
 
 declare module "fastify" {
   interface FastifyRequest {
