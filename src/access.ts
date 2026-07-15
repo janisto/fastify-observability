@@ -6,6 +6,10 @@ import type { AccessLogLevel } from "./types.js";
 
 export type TerminalReason = "response" | "timeout" | "request_aborted" | "response_aborted";
 
+interface AccessLogger extends FastifyBaseLogger {
+  isLevelEnabled(level: AccessLogLevel): boolean;
+}
+
 export interface AccessState {
   readonly started: number;
   readonly request: FastifyRequest;
@@ -14,7 +18,7 @@ export interface AccessState {
   readonly diagnose: (kind: string, message: string) => void;
   readonly loggerBindings: Readonly<Record<string, unknown>>;
   readonly inspectLoggerBindings?: () => Readonly<Record<string, unknown>>;
-  logger: FastifyBaseLogger;
+  logger: AccessLogger;
   remoteIp: string | undefined;
   userAgent: string | undefined;
   error?: Error;
@@ -41,6 +45,8 @@ export const RESERVED_FIELDS = new Set([
   "constructor",
   "prototype",
 ]);
+
+const ACCESS_LOG_LEVELS: readonly AccessLogLevel[] = ["debug", "info", "warn", "error"];
 
 export function requestPath(rawUrl: string | undefined): string {
   if (rawUrl === undefined || rawUrl.length === 0) {
@@ -283,13 +289,22 @@ export function emitAccessRecord(state: AccessState, reason: TerminalReason, sta
   if (state.suppressAccess) {
     return;
   }
-  const level =
-    reason === "response" && status !== undefined
-      ? normalLevel(state, status)
-      : state.error !== undefined || reason === "timeout"
-        ? "error"
-        : "warn";
   try {
+    // Check every package level instead of assuming Pino's public level map
+    // has remained monotonic. This still avoids all enrichment when none can
+    // be emitted, including the normal `fatal` and `silent` thresholds.
+    if (!ACCESS_LOG_LEVELS.some((candidate) => state.logger.isLevelEnabled(candidate))) {
+      return;
+    }
+    const level =
+      reason === "response" && status !== undefined
+        ? normalLevel(state, status)
+        : state.error !== undefined || reason === "timeout"
+          ? "error"
+          : "warn";
+    if (!state.logger.isLevelEnabled(level)) {
+      return;
+    }
     const loggerBindings = terminalLoggerBindings(state);
     if (loggerBindings === undefined) {
       return;

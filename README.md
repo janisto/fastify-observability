@@ -74,14 +74,16 @@ an independently created Pino instance, a Fastify-compatible custom logger,
 Fastify's broader [logging API](https://fastify.dev/docs/latest/Reference/Logging/)
 to one configuration the package can verify.
 
-The returned value is still a normal Pino logger, including
+The returned runtime is Pino and includes
 [Pino's public `bindings()` method](https://github.com/pinojs/pino/blob/v10.3.1/docs/api.md#loggerbindings).
-Use `app.log`, `request.log`, and `reply.log` for application records; no wrapper
-logging API is introduced.
+Its public `ObservabilityLogger` type omits mutation points blocked by the
+package, and guarded children retain that type. Use `app.log`, `request.log`,
+and `reply.log` for application records; no wrapper logging API is introduced.
 
 Applications that prefer shorter local helpers can wrap those Fastify loggers
 without introducing another backend or global logger. The copyable
-[`examples/local_wrapper/applog.ts`](examples/local_wrapper/applog.ts) helper
+[`examples/local_wrapper/applog.ts`](https://github.com/janisto/fastify-observability/blob/main/examples/local_wrapper/applog.ts)
+helper
 accepts `request.log` explicitly, so request and trace bindings are preserved.
 
 ## Logger configuration
@@ -94,8 +96,8 @@ record contract.
 | `preset` | `"default"` | `default`, `gcp`, `aws`, or `azure` field shape |
 | `level` | `"info"` | Standard Pino threshold, including `silent` |
 | `base` | Pino default | Stable application bindings such as service metadata |
-| `redact` | None | Pino redaction for application-owned paths |
-| `serializers` | Pino defaults | Serializers for application-owned fields |
+| `redact` | None | Explicit root Pino redaction; no fields are redacted by default |
+| `serializers` | Pino defaults | Serializers for application-owned fields; they must never throw |
 | `transport` | None | Pino transport configuration |
 | `destination` | Pino stdout | Explicit Pino destination stream; mutually exclusive with `transport` |
 
@@ -105,13 +107,27 @@ hooks. The message key is always `message`. The GCP preset maps Pino levels to
 Cloud Logging severities (`warn` becomes `WARNING`; `fatal` becomes
 `CRITICAL`); the other presets retain Pino's numeric `level`.
 
-Package and envelope names cannot appear in `base`. Redaction and custom
-serializers cannot target package fields; this includes direct, bracket, quoted
-bracket, and root-wildcard redaction paths such as `[*]`. `err` retains
-Pino/Fastify's standard serializer contract. `setBindings()` is blocked. A
-child can add a new binding, but it cannot repeat a parent binding, bind Pino's
-hidden `pid` or `hostname` base names, or bind an envelope/reserved Pino option
-name.
+The default is full-fidelity logging. No redaction is installed automatically,
+and observed errors retain Pino's standard type, message, stack, cause text, and
+enumerable error properties. Concrete path, remote IP, User-Agent, and provider
+fields are also retained when available.
+
+Redaction is explicit root policy. In addition to application-owned paths, it
+may target the privacy-bearing package fields `path`, `remote_ip`, `user_agent`,
+nested `err.*`, and nested `httpRequest.*`. Correlation, envelope, structural,
+top-level `err`, and top-level `httpRequest` fields remain protected. Direct,
+bracket, quoted-bracket, and wildcard path forms are validated consistently.
+Package children inherit root redaction and cannot replace or clear it; Pino
+[documents that a child redaction option would otherwise override its parent](https://github.com/pinojs/pino/blob/v10.3.1/docs/api.md#optionsredact-array--object).
+
+Package and envelope names cannot appear in `base`, and custom serializers
+cannot target package fields. `err` retains Pino/Fastify's standard serializer
+contract. `setBindings()` is blocked. A child can add a new binding, but it
+cannot repeat a parent binding, bind Pino's hidden `pid` or `hostname` base
+names, or bind an envelope/reserved Pino option name. Public child options are
+runtime-guarded because Fastify's structural logger type requires Pino's full
+child-options parameter; only standard `level` and application-owned
+`serializers` are accepted.
 
 Preset selection belongs only to the logger factory. It is not repeated in
 plugin options, so the logger envelope and provider fields cannot drift apart.
@@ -185,18 +201,33 @@ the same one-shot terminal guard.
 | `remote_ip` | `request.ip`, honoring the application's `trustProxy` policy |
 | `user_agent` | One unambiguous raw User-Agent value |
 | `terminal_reason` | `timeout`, `request_aborted`, or `response_aborted` |
-| `err` | Observed `Error`, through Pino's error serializer |
+| `err` | Observed `Error`, including standard type, message, and stack by default |
 | `httpRequest` | GCP HTTP request object, on the GCP preset only |
 
 Queries, bodies, cookies, authorization, and arbitrary headers are never
 logged. Use `path_template` for low-cardinality aggregation; concrete `path`
 remains high-cardinality diagnostic data.
 
+That is deliberate terminal-schema selection, not hidden redaction. Fields an
+application explicitly passes to `app.log`, `request.log`, or `reply.log` are
+serialized normally unless the application configured root redaction or a
+serializer for that application-owned field.
+
+There is no default redaction. If an application's privacy policy requires
+censoring or removing error details, concrete paths, remote addresses, or user
+agents, configure the explicit root `redact` option and include both top-level
+and GCP `httpRequest.*` paths where applicable.
+
 Default levels are `error` for 5xx, `warn` for 4xx, and `info` otherwise.
 Timeouts and observed internal stream failures use `error`; connection aborts
 without an exposed error use `warn`. `levelForStatus` can return the public
 `AccessLogLevel` union: `debug | info | warn | error`. Pino must also enable the
 selected level.
+
+If none of the package access levels are enabled, the package performs no
+status-level callback, binding inspection, field construction, or extra-field
+callback. If some access levels are enabled but the selected level is filtered,
+the selected level is resolved and enrichment is skipped.
 
 `extraFields(request, reply)` must synchronously return a plain or
 null-prototype record of application fields. Reserved package, Pino, provider,
@@ -213,9 +244,10 @@ show only the final value. Pino documents this
 The public `bindings()` method is necessary for inspection, but it is not
 sufficient proof by itself.
 
-For package terminal records, the supported configuration guarantees one
-top-level occurrence of every package, provider, envelope, access, base, and
-extra field:
+For package terminal records, the supported configuration guarantees that
+every emitted package, provider, envelope, access, base, and extra field has
+exactly one top-level occurrence. Fields explicitly removed by root redaction
+are absent rather than duplicated:
 
 1. The factory rejects protected root bindings and uncontrolled envelope
    options.
@@ -257,7 +289,9 @@ Set `preset` in `createObservabilityLogger()`.
 - `default` emits provider-neutral request and W3C correlation fields.
 
 Provider fields correlate logs only. No provider SDK is initialized and no span
-is created. See [EXAMPLES.md](EXAMPLES.md) for focused setup modules.
+is created. See
+[EXAMPLES.md](https://github.com/janisto/fastify-observability/blob/main/EXAMPLES.md)
+for focused setup modules.
 
 ## Diagnostics and failure boundaries
 
@@ -267,10 +301,16 @@ kind is emitted at most once per plugin instance. `stderr` is used only if Pino
 throws synchronously while writing the diagnostic. A `silent` or higher logger
 threshold filters diagnostics normally.
 
-Logger inspection, application callbacks, remote-IP resolution, stream
-observation, and access emission are failure-contained after Fastify has created
-the request. Unsafe constructor wiring and failures before Fastify enters the
-request lifecycle can still fail startup or the request.
+Logger inspection, the package's `levelForStatus` and `extraFields` callbacks,
+remote-IP resolution, stream observation, and access emission are
+failure-contained after Fastify has created the request. Unsafe constructor
+wiring and failures before Fastify enters the request lifecycle can still fail
+startup or the request.
+
+Pino executes application serializers and functional redaction censors during
+ordinary application log calls. Those callbacks are outside the package's
+failure containment and must never throw;
+[Fastify warns that a throwing serializer can terminate the Node.js process](https://fastify.dev/docs/latest/Reference/Logging/#serializers).
 
 Node parser failures before Fastify creates a request, WebSocket messages,
 hijacked/raw responses, and manually managed upgrades are outside the runtime
@@ -312,8 +352,10 @@ just install
 just qa
 ```
 
-The [`Justfile`](Justfile) groups the common test, QA, package, and lifecycle
-commands. `just qa` removes `dist/` before running the same `pnpm qa` gate used
+The repository
+[`Justfile`](https://github.com/janisto/fastify-observability/blob/main/Justfile)
+groups the common test, QA, package, and lifecycle commands. `just qa` removes
+`dist/` before running the same `pnpm qa` gate used
 for releases, preventing deleted or renamed modules from surviving a local
 rebuild. `just clean` removes generated outputs but preserves installed
 dependencies; use `just fresh` for a clean dependency installation. The pnpm
@@ -327,7 +369,8 @@ Fastify version in an isolated consumer, typechecks its declarations, and runs
 a real request through the installed package.
 
 Releases use GitHub OIDC and npm trusted publishing without a stored npm write
-token. See [RELEASE.md](RELEASE.md).
+token. See
+[RELEASE.md](https://github.com/janisto/fastify-observability/blob/main/RELEASE.md).
 
 ## References
 
@@ -340,6 +383,7 @@ token. See [RELEASE.md](RELEASE.md).
 - [Fastify request](https://fastify.dev/docs/latest/Reference/Request/) documents
   `request.id`, `request.log`, and proxy-aware `request.ip`.
 - [Pino `bindings()`](https://github.com/pinojs/pino/blob/v10.3.1/docs/api.md#loggerbindings),
+  [`isLevelEnabled()`](https://github.com/pinojs/pino/blob/v10.3.1/docs/api.md#loggerislevelenabledlevel),
   the [child-logger duplicate-key caveat](https://github.com/pinojs/pino/blob/v10.3.1/docs/child-loggers.md#duplicate-keys-caveat),
   and [redaction](https://github.com/pinojs/pino/blob/v10.3.1/docs/redaction.md)
   define the logger behavior guarded by the package.

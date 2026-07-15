@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import {
   type AccessState,
@@ -99,6 +99,7 @@ describe("access helpers", () => {
       warn: ReturnType<typeof vi.fn>;
       error: ReturnType<typeof vi.fn>;
     };
+    isLevelEnabled: ReturnType<typeof vi.fn>;
     diagnose: ReturnType<typeof vi.fn>;
   } {
     const log = vi.fn();
@@ -109,6 +110,7 @@ describe("access helpers", () => {
       error: vi.fn((...arguments_: unknown[]) => log(...arguments_)),
     };
     const diagnose = vi.fn();
+    const isLevelEnabled = vi.fn(() => true);
     const raw = new EventEmitter() as EventEmitter & {
       url?: string;
       rawHeaders: string[];
@@ -133,7 +135,7 @@ describe("access helpers", () => {
       tracestateHeader: "tracestate",
       message: "request completed",
     });
-    const logger = logs as unknown as FastifyBaseLogger;
+    const logger = { ...logs, isLevelEnabled } as unknown as AccessState["logger"];
     return {
       state: {
         started: performance.now(),
@@ -151,6 +153,7 @@ describe("access helpers", () => {
       },
       log,
       logs,
+      isLevelEnabled,
       diagnose,
     };
   }
@@ -358,6 +361,90 @@ describe("access helpers", () => {
     expect(state.stream).toBeUndefined();
     expect(state.streamErrorListener).toBeUndefined();
     expect(state.emitted).toBe(true);
+  });
+
+  it("does not evaluate access callbacks when every access level is disabled", () => {
+    const inspectLoggerBindings = vi.fn(() => ({}));
+    const levelForStatus = vi.fn(() => "error" as const);
+    const extraFields = vi.fn(() => ({ unexpected: true }));
+    const filtered = accessState({ inspectLoggerBindings });
+    filtered.isLevelEnabled.mockReturnValue(false);
+    const state = {
+      ...filtered.state,
+      options: { ...filtered.state.options, levelForStatus, extraFields },
+    };
+
+    emitAccessRecord(state, "response", 200);
+
+    expect(filtered.log).not.toHaveBeenCalled();
+    expect(inspectLoggerBindings).not.toHaveBeenCalled();
+    expect(levelForStatus).not.toHaveBeenCalled();
+    expect(extraFields).not.toHaveBeenCalled();
+    expect(filtered.diagnose).not.toHaveBeenCalled();
+    expect(state.emitted).toBe(true);
+  });
+
+  it("does not assume that the logger's public level map remains monotonic", () => {
+    const sample = accessState();
+    sample.isLevelEnabled.mockImplementation((level: string) => level === "info");
+
+    emitAccessRecord(sample.state, "response", 200);
+
+    expect(sample.logs.info).toHaveBeenCalledOnce();
+    expect(sample.log.mock.calls[0]?.[0]).toMatchObject({ method: "GET", path: "/resource", status: 200 });
+  });
+
+  it("skips enrichment only when the selected access level is disabled", () => {
+    const filteredInspection = vi.fn(() => ({}));
+    const filteredExtraFields = vi.fn(() => ({ unexpected: true }));
+    const filtered = accessState({ inspectLoggerBindings: filteredInspection });
+    filtered.isLevelEnabled.mockImplementation((level: string) => level === "error");
+    const filteredState = {
+      ...filtered.state,
+      options: { ...filtered.state.options, extraFields: filteredExtraFields },
+    };
+
+    emitAccessRecord(filteredState, "response", 200);
+
+    expect(filtered.log).not.toHaveBeenCalled();
+    expect(filteredInspection).not.toHaveBeenCalled();
+    expect(filteredExtraFields).not.toHaveBeenCalled();
+
+    const enabledExtraFields = vi.fn(() => ({ incident: "checkout" }));
+    const enabled = accessState();
+    enabled.isLevelEnabled.mockImplementation((level: string) => level === "error");
+    const enabledState = {
+      ...enabled.state,
+      options: { ...enabled.state.options, extraFields: enabledExtraFields },
+    };
+
+    emitAccessRecord(enabledState, "response", 500);
+
+    expect(enabled.logs.error).toHaveBeenCalledOnce();
+    expect(enabledExtraFields).toHaveBeenCalledOnce();
+    expect(enabled.log.mock.calls[0]?.[0]).toMatchObject({ incident: "checkout", status: 500 });
+  });
+
+  it("contains a level-inspection failure without attempting enrichment or emission", () => {
+    const inspectLoggerBindings = vi.fn(() => ({}));
+    const extraFields = vi.fn(() => ({ unexpected: true }));
+    const failed = accessState({ inspectLoggerBindings });
+    failed.isLevelEnabled.mockImplementation(() => {
+      throw new Error("level inspection failed");
+    });
+    const state = {
+      ...failed.state,
+      options: { ...failed.state.options, extraFields },
+    };
+
+    emitAccessRecord(state, "response", 200);
+    emitAccessRecord(state, "response", 200);
+
+    expect(failed.log).not.toHaveBeenCalled();
+    expect(inspectLoggerBindings).not.toHaveBeenCalled();
+    expect(extraFields).not.toHaveBeenCalled();
+    expect(failed.diagnose).toHaveBeenCalledOnce();
+    expect(failed.diagnose).toHaveBeenCalledWith("logger", expect.any(String));
   });
 
   it("marks emission complete and diagnoses a synchronous logger failure once", () => {

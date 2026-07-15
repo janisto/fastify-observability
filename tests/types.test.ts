@@ -1,15 +1,16 @@
-import Fastify, { type FastifyInstance, LogController } from "fastify";
+import Fastify, { type FastifyBaseLogger, type FastifyInstance, LogController } from "fastify";
 import plugin, {
   type AccessLogLevel,
   createObservabilityLogger,
   createRequestIdGenerator,
   fastifyObservability,
   type LoggingPreset,
+  type ObservabilityLogger,
   type ObservabilityLoggerOptions,
   type RequestObservability,
   type TraceContext,
 } from "fastify-observability";
-import type { Bindings, Logger } from "pino";
+import type { Bindings } from "pino";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 describe("public types", () => {
@@ -26,7 +27,9 @@ describe("public types", () => {
       "trace" | "debug" | "info" | "warn" | "error" | "fatal" | "silent" | undefined
     >();
     expectTypeOf(createObservabilityLogger).parameter(0).toEqualTypeOf<ObservabilityLoggerOptions | undefined>();
-    expectTypeOf(createObservabilityLogger()).toEqualTypeOf<Logger>();
+    expectTypeOf(createObservabilityLogger()).toEqualTypeOf<ObservabilityLogger>();
+    expectTypeOf(createObservabilityLogger()).toMatchTypeOf<FastifyBaseLogger>();
+    expectTypeOf(createObservabilityLogger().child({ component: "catalog" })).toEqualTypeOf<ObservabilityLogger>();
     expectTypeOf(createObservabilityLogger().bindings()).toEqualTypeOf<Bindings>();
     const register = (app: FastifyInstance) => {
       app.register(plugin, { levelForStatus: () => "debug" });
@@ -65,8 +68,15 @@ describe("public types", () => {
 
   it("keeps opinionated logger and preset controls out of the wrong public surface", () => {
     const compileOnly = (app: FastifyInstance) => {
+      const logger = createObservabilityLogger();
       // @ts-expect-error createObservabilityLogger owns the Pino message key
       createObservabilityLogger({ messageKey: "msg" });
+      // @ts-expect-error canonical logger bindings are immutable
+      logger.setBindings({ component: "changed" });
+      // @ts-expect-error the package owns Pino's child-registration callback
+      logger.onChild = () => undefined;
+      // @ts-expect-error custom Pino levels are outside the canonical contract
+      logger.level = "verbose";
       // @ts-expect-error preset selection belongs to createObservabilityLogger, not plugin options
       app.register(plugin, { preset: "gcp" });
       // @ts-expect-error extraFields is deliberately synchronous

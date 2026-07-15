@@ -12,7 +12,7 @@ import type { LoggingPreset } from "./types.js";
 const PRESETS = new Set<LoggingPreset>(["default", "gcp", "aws", "azure"]);
 const LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal", "silent"]);
 const LOGGER_OPTION_KEYS = new Set(["preset", "level", "base", "redact", "serializers", "transport", "destination"]);
-const CHILD_OPTION_KEYS = new Set(["level", "redact", "serializers"]);
+const CHILD_OPTION_KEYS = new Set(["level", "serializers"]);
 const FASTIFY_UNSET_CHILD_OPTIONS = new Set(["logger", "genReqId"]);
 const PINO_IGNORED_BINDINGS = new Set(["serializers", "formatters", "customLevels"]);
 const PINO_SERIALIZERS = pino.symbols.serializersSym;
@@ -84,6 +84,11 @@ export interface ObservabilityLoggerOptions {
   destination?: DestinationStream;
 }
 
+export type ObservabilityLogger = Omit<Logger, "child" | "level" | "onChild" | "setBindings"> & {
+  level: LevelWithSilent;
+  child(bindings: Bindings, options?: ChildLoggerOptions): ObservabilityLogger;
+};
+
 export interface CanonicalLoggerProfile {
   readonly preset: LoggingPreset;
 }
@@ -142,28 +147,45 @@ function validateBaseBindings(bindings: Readonly<Record<string, unknown>> | null
   }
 }
 
-function redactionRoot(path: string): string {
-  if (!path.startsWith("[")) {
-    const dot = path.indexOf(".");
-    const bracket = path.indexOf("[");
-    const boundary = Math.min(dot === -1 ? path.length : dot, bracket === -1 ? path.length : bracket);
-    return path.slice(0, boundary);
+interface RedactionTarget {
+  readonly root: string;
+  readonly nested: boolean;
+}
+
+const DIRECTLY_REDACTABLE_PACKAGE_FIELDS = new Set(["path", "remote_ip", "user_agent"]);
+const NESTED_REDACTABLE_PACKAGE_FIELDS = new Set(["err", "httpRequest"]);
+const REDACTION_PATH_SEGMENT = /[^.[\]]+|\[([^[]\]]*?)\]/;
+
+function redactionTarget(path: string): RedactionTarget {
+  // Match the first namespace the same way Pino 10's redaction machinery
+  // does. In particular, Pino accepts a leading dot and backtick-quoted
+  // bracket notation, so a simple string split would allow protected paths to
+  // bypass this policy.
+  const first = REDACTION_PATH_SEGMENT.exec(path);
+  if (first === null) {
+    return { root: path, nested: false };
   }
-  const closingBracket = path.indexOf("]");
-  if (closingBracket === -1) {
-    return path;
-  }
-  let root = path.slice(1, closingBracket).trim();
+  let root = (first[1] ?? first[0]).trim();
   const quote = root[0];
-  if ((quote === '"' || quote === "'") && root.at(-1) === quote) {
+  if ((quote === '"' || quote === "'" || quote === "`") && root.at(-1) === quote) {
     root = root.slice(1, -1);
   }
-  return root;
+  const remainder = path.slice(first.index + first[0].length);
+  return { root, nested: REDACTION_PATH_SEGMENT.test(remainder) };
 }
 
 function protectedRedactionPath(path: string): boolean {
-  const root = redactionRoot(path);
-  return root === "*" || PROTECTED_LOG_FIELDS.has(root);
+  const { root, nested } = redactionTarget(path);
+  if (root === "*") {
+    return true;
+  }
+  if (!PROTECTED_LOG_FIELDS.has(root)) {
+    return false;
+  }
+  if (DIRECTLY_REDACTABLE_PACKAGE_FIELDS.has(root)) {
+    return false;
+  }
+  return !(nested && NESTED_REDACTABLE_PACKAGE_FIELDS.has(root));
 }
 
 function validateRedaction(redact: LoggerOptions["redact"]): void {
@@ -248,9 +270,6 @@ function normalizeChildOptions(options: unknown): ChildLoggerOptions | undefined
   const fastifyInitialization = [...FASTIFY_UNSET_CHILD_OPTIONS].every(
     (key) => Object.hasOwn(options, key) && Reflect.get(options, key) === undefined,
   );
-  if (Object.hasOwn(options, "redact")) {
-    validateRedaction(Reflect.get(options, "redact") as LoggerOptions["redact"]);
-  }
   const serializers = Reflect.get(options, "serializers");
   if (Object.hasOwn(options, "serializers")) {
     validateSerializers(serializers, true, fastifyInitialization);
@@ -339,7 +358,7 @@ export function createCanonicalChild(logger: Logger, bindings: Bindings): Logger
   return child;
 }
 
-export function createObservabilityLogger(options: ObservabilityLoggerOptions = {}): Logger {
+export function createObservabilityLogger(options: ObservabilityLoggerOptions = {}): ObservabilityLogger {
   const profile = validateOptions(options);
   validateBaseBindings(options.base);
   validateRedaction(options.redact);
@@ -378,5 +397,5 @@ export function createObservabilityLogger(options: ObservabilityLoggerOptions = 
   const logger = pino(loggerOptions, options.destination);
   nativeChild = logger.child as unknown as NativeChild;
   registerLogger(logger, profile, nativeChild, onChild);
-  return logger;
+  return logger as ObservabilityLogger;
 }

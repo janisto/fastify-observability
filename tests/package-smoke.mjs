@@ -41,7 +41,21 @@ const [artifact] = packed;
 assert.equal(artifact.name, "fastify-observability");
 assert.equal(artifact.version, packageJson.version);
 assert.match(artifact.integrity, /^sha512-/);
-assert.deepEqual(artifact.files.map(({ path }) => path).sort(), expectedPaths, "the npm artifact file set changed");
+const packedPaths = artifact.files.map(({ path }) => path).sort();
+assert.deepEqual(packedPaths, expectedPaths, "the npm artifact file set changed");
+
+const readme = readFileSync(join(root, "README.md"), "utf8");
+for (const match of readme.matchAll(/\]\(([^)]+)\)/g)) {
+  const destination = match[1];
+  if (destination === undefined || destination.startsWith("#") || /^[a-z][a-z\d+.-]*:/i.test(destination)) {
+    continue;
+  }
+  const target = destination.split("#", 1)[0];
+  assert.ok(
+    target && packedPaths.includes(target),
+    `README relative link target is absent from npm artifact: ${destination}`,
+  );
+}
 
 const tarball = join(artifacts, artifact.filename);
 const consumer = mkdtempSync(join(tmpdir(), "fastify-observability-package-"));
@@ -89,10 +103,14 @@ try {
 import fastifyObservability, {
   createObservabilityLogger,
   createRequestIdGenerator,
+  type ObservabilityLogger,
   type RequestObservability,
 } from "fastify-observability";
 
-const logger = createObservabilityLogger({ level: "silent" });
+const logger: ObservabilityLogger = createObservabilityLogger({ level: "silent" });
+const child = logger.child({ component: "package-smoke" });
+// @ts-expect-error canonical logger binding mutation is blocked at runtime
+child.setBindings({ component: "changed" });
 const app = Fastify({
   loggerInstance: logger,
   requestIdHeader: false,

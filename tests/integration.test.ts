@@ -270,18 +270,117 @@ describe("Fastify integration", () => {
     }
   });
 
-  it("uses final response status and retains observed errors", async () => {
-    const { app, records } = await buildTestApp();
+  it("uses final response status and retains full observed error details by default", async () => {
+    const { app, lines, records } = await buildTestApp();
     apps.push(app);
     app.get("/translated", async () => {
-      throw new Error("translated failure");
+      const cause = Object.assign(new Error("root-cause-canary"), { code: "E_ROOT_CAUSE" });
+      throw Object.assign(new Error("translated-failure-canary", { cause }), {
+        metadata: { token: "error-token-canary" },
+      });
     });
     app.setErrorHandler((_error, _request, reply) => reply.code(418).send({ handled: true }));
     const response = await app.inject("/translated");
     expect(response.statusCode).toBe(418);
     const access = accessRecords(records)[0];
     expect(access).toMatchObject({ level: 40, status: 418 });
-    expect(access?.["err"]).toMatchObject({ type: "Error", message: "translated failure" });
+    expect(access?.["err"]).toMatchObject({
+      type: "Error",
+      metadata: { token: "error-token-canary" },
+    });
+    const error = access?.["err"] as Record<string, unknown> | undefined;
+    expect(error?.["message"]).toEqual(expect.stringContaining("translated-failure-canary"));
+    expect(error?.["message"]).toEqual(expect.stringContaining("root-cause-canary"));
+    expect(error?.["stack"]).toEqual(expect.stringContaining("translated-failure-canary"));
+    expect(error?.["stack"]).toEqual(expect.stringContaining("root-cause-canary"));
+    const line = lines.find((candidate) => candidate.includes('"message":"request completed"'));
+    expect(line).toContain("translated-failure-canary");
+    expect(line).toContain("root-cause-canary");
+    expect(line).toContain("error-token-canary");
+  });
+
+  it("applies explicit root redaction to serialized terminal errors", async () => {
+    const { app, lines, records } = await buildTestApp(
+      {},
+      {
+        redact: {
+          paths: ['["err"].message', 'err["stack"]', 'err.metadata["token"]'],
+          remove: true,
+        },
+      },
+    );
+    apps.push(app);
+    app.get("/translated", async () => {
+      throw Object.assign(new Error("redacted-error-canary"), {
+        metadata: { token: "redacted-token-canary", retained: "diagnostic-code" },
+      });
+    });
+    app.setErrorHandler((_error, _request, reply) => reply.code(418).send({ handled: true }));
+
+    const response = await app.inject("/translated");
+
+    expect(response.statusCode).toBe(418);
+    const access = accessRecords(records)[0];
+    expect(access).toMatchObject({
+      level: 40,
+      status: 418,
+      err: { type: "Error", metadata: { retained: "diagnostic-code" } },
+    });
+    const error = access?.["err"] as Record<string, unknown> | undefined;
+    expect(error).not.toHaveProperty("message");
+    expect(error).not.toHaveProperty("stack");
+    const line = lines.find((candidate) => candidate.includes('"message":"request completed"'));
+    expect(line).toBeDefined();
+    expect(line).not.toContain("redacted-error-canary");
+    expect(line).not.toContain("redacted-token-canary");
+    expect(topLevelKeyOccurrences(line as string, "err")).toBe(1);
+  });
+
+  it("can explicitly remove privacy-bearing request fields without losing structural access data", async () => {
+    const { app, lines, records } = await buildTestApp(
+      {},
+      {
+        preset: "gcp",
+        redact: {
+          paths: [
+            '["path"]',
+            "remote_ip",
+            '["user_agent"]',
+            'httpRequest["requestUrl"]',
+            '["httpRequest"].remoteIp',
+            "httpRequest.userAgent",
+          ],
+          remove: true,
+        },
+      },
+    );
+    apps.push(app);
+    app.get("/customers/:id", () => ({ ok: true }));
+
+    const response = await app.inject({
+      url: "/customers/private-path-canary",
+      headers: { "user-agent": "private-agent-canary" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const access = accessRecords(records)[0];
+    expect(access).toMatchObject({
+      method: "GET",
+      path_template: "/customers/:id",
+      status: 200,
+      httpRequest: { requestMethod: "GET", status: 200 },
+    });
+    expect(access).not.toHaveProperty("path");
+    expect(access).not.toHaveProperty("remote_ip");
+    expect(access).not.toHaveProperty("user_agent");
+    expect(access?.["httpRequest"]).not.toHaveProperty("requestUrl");
+    expect(access?.["httpRequest"]).not.toHaveProperty("remoteIp");
+    expect(access?.["httpRequest"]).not.toHaveProperty("userAgent");
+    const line = lines.find((candidate) => candidate.includes('"message":"request completed"'));
+    expect(line).toBeDefined();
+    expect(line).not.toContain("private-path-canary");
+    expect(line).not.toContain("private-agent-canary");
+    expect(line).not.toContain("127.0.0.1");
   });
 
   it("honors a debug level selected by levelForStatus", async () => {
@@ -383,11 +482,12 @@ describe("Fastify integration", () => {
     expect(accessRecords(records)).toHaveLength(1);
   });
 
-  it("lets the canonical silent level filter application, access, and diagnostic records", async () => {
+  it("does no access enrichment work when the canonical logger is silent", async () => {
+    const levelForStatus = vi.fn(() => "error" as const);
     const extraFields = vi.fn(() => {
-      throw new Error("diagnostic should be filtered");
+      throw new Error("access enrichment should not execute");
     });
-    const { app, records } = await buildTestApp({ extraFields }, { level: "silent" });
+    const { app, records } = await buildTestApp({ extraFields, levelForStatus }, { level: "silent" });
     apps.push(app);
     app.get("/", (request) => {
       request.log.info("application record should be filtered");
@@ -398,8 +498,27 @@ describe("Fastify integration", () => {
 
     expect(response.statusCode).toBe(200);
     expect(isValidRequestId(response.headers["x-request-id"])).toBe(true);
-    expect(extraFields).toHaveBeenCalledOnce();
+    expect(levelForStatus).not.toHaveBeenCalled();
+    expect(extraFields).not.toHaveBeenCalled();
     expect(records).toHaveLength(0);
+  });
+
+  it("skips enrichment at a filtered real Pino level and retains enabled error access records", async () => {
+    const extraFields = vi.fn(() => ({ deployment: "production" }));
+    const { app, records } = await buildTestApp({ extraFields }, { level: "error" });
+    apps.push(app);
+    app.get("/healthy", (_request, reply) => reply.code(204).send());
+    app.get("/unavailable", (_request, reply) => reply.code(503).send({ unavailable: true }));
+
+    expect((await app.inject("/healthy")).statusCode).toBe(204);
+    expect(extraFields).not.toHaveBeenCalled();
+    expect(accessRecords(records)).toHaveLength(0);
+
+    expect((await app.inject("/unavailable")).statusCode).toBe(503);
+    expect(extraFields).toHaveBeenCalledOnce();
+    expect(accessRecords(records)).toEqual([
+      expect.objectContaining({ level: 50, status: 503, deployment: "production" }),
+    ]);
   });
 
   it("suppresses the access record for the legacy reqId label without failing traffic", async () => {
@@ -876,7 +995,11 @@ describe("Fastify integration", () => {
     app.get("/", (request) => {
       let message = "";
       try {
-        (request.log as FastifyBaseLogger & { setBindings(bindings: Record<string, unknown>): void }).setBindings({
+        (
+          request.log as unknown as FastifyBaseLogger & {
+            setBindings(bindings: Record<string, unknown>): void;
+          }
+        ).setBindings({
           correlation_id: "changed",
         });
       } catch (error) {

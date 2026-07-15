@@ -109,7 +109,8 @@ git diff --check
 ```
 
 `just package-check` removes `dist/`, runs the complete `pnpm qa` gate, creates
-the exact npm tarball under `artifacts/`, and verifies its fixed file set.
+the exact npm tarball under `artifacts/`, verifies its fixed file set, and checks
+that every relative README link resolves to a file in that tarball.
 It then installs that tarball with Fastify 5.10.0 in a temporary consumer,
 typechecks the public declarations with strict TypeScript, and runs the public
 plugin through a real correlated GCP request and terminal access record.

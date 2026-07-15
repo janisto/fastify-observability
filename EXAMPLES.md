@@ -17,6 +17,11 @@ The setup modules export `app` only so an application can add its own plugins,
 routes, and startup policy. TypeScript checks every example as part of
 `pnpm typecheck`.
 
+The examples use the full-fidelity default: no fields are redacted. Applications
+that require a privacy policy configure `redact` once in
+`createObservabilityLogger()`; package-created children inherit that policy and
+cannot replace it.
+
 Provider selection is configured once in `createObservabilityLogger()`. The
 plugin derives it from that logger. In the GCP example,
 `logging.googleapis.com/trace` intentionally remains the bare trace ID from the

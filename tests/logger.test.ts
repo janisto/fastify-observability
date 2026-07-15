@@ -61,7 +61,11 @@ describe("canonical Pino logger", () => {
     const logger = createObservabilityLogger({ destination: new JsonLineStream() });
     const child = logger.child({ request_id: "fixed" });
 
-    expect(() => child.setBindings({ request_id: "changed" })).toThrow("do not allow setBindings");
+    expect(() =>
+      (child as unknown as { setBindings(bindings: Record<string, unknown>): void }).setBindings({
+        request_id: "changed",
+      }),
+    ).toThrow("do not allow setBindings");
     expect(() => child.child({ request_id: "duplicate" })).toThrow('duplicate binding "request_id"');
     expect(() => logger.child({ tenant: "second" }).child({ tenant: "duplicate" })).toThrow(
       'duplicate binding "tenant"',
@@ -224,10 +228,13 @@ describe("canonical Pino logger", () => {
     expect(stream.records[0]).toMatchObject({ level: 20, message: "child debug" });
   });
 
-  it("applies safe redaction on a canonical child", () => {
+  it("inherits root redaction and rejects child attempts to replace that policy", () => {
     const stream = new JsonLineStream();
-    const logger = createObservabilityLogger({ destination: stream });
-    const child = logger.child({}, { redact: { paths: ["credentials.password"], remove: true } });
+    const logger = createObservabilityLogger({
+      redact: { paths: ["credentials.password"], remove: true },
+      destination: stream,
+    });
+    const child = logger.child({ component: "catalog" });
 
     child.info({ credentials: { username: "reader", password: "secret" } }, "authenticated");
 
@@ -236,6 +243,31 @@ describe("canonical Pino logger", () => {
       credentials: { username: "reader" },
     });
     expect(stream.lines[0]?.includes("secret")).toBe(false);
+    expect(() => logger.child({}, { redact: [] } as never)).toThrow('do not allow child option "redact"');
+  });
+
+  it("does not implicitly redact application records", () => {
+    const stream = new JsonLineStream();
+    const logger = createObservabilityLogger({ destination: stream });
+
+    logger.info(
+      {
+        credentials: { password: "password-canary" },
+        authorization: "authorization-canary",
+        cookie: "cookie-canary",
+      },
+      "application record",
+    );
+
+    expect(stream.records[0]).toMatchObject({
+      credentials: { password: "password-canary" },
+      authorization: "authorization-canary",
+      cookie: "cookie-canary",
+      message: "application record",
+    });
+    expect(stream.lines[0]).toEqual(expect.stringContaining("password-canary"));
+    expect(stream.lines[0]).toEqual(expect.stringContaining("authorization-canary"));
+    expect(stream.lines[0]).toEqual(expect.stringContaining("cookie-canary"));
   });
 
   it("applies a safe serializer on a canonical child", () => {
@@ -325,21 +357,30 @@ describe("canonical Pino logger", () => {
 
   it.each([
     "request_id",
+    ".request_id",
     "[request_id]",
+    ".[request_id]",
+    "[`request_id`]",
     '[ "message" ]',
-    "httpRequest.status",
+    "err",
+    "[err]",
+    "httpRequest",
+    '["httpRequest"]',
     "[*]",
     "[ * ]",
     '["*"]',
     "['*']",
     "*",
+    ".*",
   ])("rejects protected root redaction path %s", (path) => {
     expect(() => createObservabilityLogger({ redact: [path] })).toThrow("does not allow redaction");
   });
 
-  it("rejects protected redaction on a canonical child", () => {
+  it("rejects every redaction override on a canonical child", () => {
     const logger = createObservabilityLogger({ destination: new JsonLineStream() });
-    expect(() => logger.child({}, { redact: ["[request_id]"] })).toThrow("does not allow redaction");
+    expect(() => logger.child({}, { redact: ["credentials.password"] } as never)).toThrow(
+      'do not allow child option "redact"',
+    );
   });
 
   it.each([
@@ -359,6 +400,19 @@ describe("canonical Pino logger", () => {
     });
     logger.info({ account: { id: "42", token: "secret" } }, "loaded");
     expect(stream.records[0]).toMatchObject({ account: { id: "42" }, message: "loaded" });
+  });
+
+  it("exposes application serializer failures to the calling application", () => {
+    const logger = createObservabilityLogger({
+      serializers: {
+        account: () => {
+          throw new Error("serializer failed");
+        },
+      },
+      destination: new JsonLineStream(),
+    });
+
+    expect(() => logger.info({ account: { id: "42" } }, "loaded")).toThrow("serializer failed");
   });
 
   it.each([

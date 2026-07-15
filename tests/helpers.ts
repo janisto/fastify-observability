@@ -5,6 +5,7 @@ import fastifyObservability, {
   createRequestIdGenerator,
   type FastifyObservabilityOptions,
   type LoggingPreset,
+  type ObservabilityLoggerOptions,
 } from "fastify-observability";
 
 export interface LogRecord {
@@ -76,7 +77,12 @@ export function topLevelKeyOccurrences(line: string, key: string): number {
 
 export async function buildTestApp(
   pluginOptions: FastifyObservabilityOptions = {},
-  setup: { canonicalLabel?: boolean; level?: "trace" | "debug" | "silent"; preset?: LoggingPreset } = {},
+  setup: {
+    canonicalLabel?: boolean;
+    level?: ObservabilityLoggerOptions["level"];
+    preset?: LoggingPreset;
+    redact?: ObservabilityLoggerOptions["redact"];
+  } = {},
 ) {
   const stream = new JsonLineStream();
   const canonicalLabel = setup.canonicalLabel ?? true;
@@ -87,6 +93,7 @@ export async function buildTestApp(
     loggerInstance: createObservabilityLogger({
       preset,
       level: setup.level ?? "debug",
+      ...(setup.redact === undefined ? {} : { redact: setup.redact }),
       destination: stream,
     }),
     requestIdHeader: false,
@@ -97,7 +104,7 @@ export async function buildTestApp(
     }),
   });
   await app.register(fastifyObservability, pluginOptions);
-  return { app, records: stream.records };
+  return { app, lines: stream.lines, records: stream.records };
 }
 
 export function accessRecords(records: readonly LogRecord[]): LogRecord[] {

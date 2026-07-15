@@ -145,7 +145,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
 
       let suppressAccess = false;
       let loggerBindings: Record<string, unknown> = {};
-      let logger = request.log;
+      let logger: PinoLogger = rootLogger;
       let inspectLoggerBindings: (() => Readonly<Record<string, unknown>>) | undefined;
       if (!isPinoLogger(request.log) || canonicalLoggerProfile(request.log) !== profile) {
         suppressAccess = true;

@@ -1,4 +1,4 @@
-export type { ObservabilityLoggerOptions } from "./logger.js";
+export type { ObservabilityLogger, ObservabilityLoggerOptions } from "./logger.js";
 export { createObservabilityLogger } from "./logger.js";
 export { fastifyObservability as default, fastifyObservability } from "./plugin.js";
 export { createRequestIdGenerator, isValidRequestId } from "./request-id.js";
