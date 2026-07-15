@@ -7,7 +7,7 @@ registering its plugins and routes.
 
 | Example | Purpose |
 | --- | --- |
-| [`examples/gcp/app.ts`](examples/gcp/app.ts) | Canonical Google Cloud `severity`, trace aliases, and `httpRequest` shape |
+| [`examples/gcp/app.ts`](examples/gcp/app.ts) | Canonical Google Cloud `severity`, bare W3C trace ID, and `httpRequest` shape |
 | [`examples/basic/app.ts`](examples/basic/app.ts) | Provider-neutral Pino fields |
 | [`examples/aws/app.ts`](examples/aws/app.ts) | Flat derived X-Ray trace correlation without an AWS SDK |
 | [`examples/azure/app.ts`](examples/azure/app.ts) | Flat Azure operation correlation without an Azure SDK |
@@ -16,6 +16,11 @@ registering its plugins and routes.
 The setup modules export `app` only so an application can add its own plugins,
 routes, and startup policy. TypeScript checks every example as part of
 `pnpm typecheck`.
+
+Provider selection is configured once in `createObservabilityLogger()`. The
+plugin derives it from that logger. In the GCP example,
+`logging.googleapis.com/trace` intentionally remains the bare trace ID from the
+validated W3C `traceparent`; no project resource prefix is added.
 
 The local wrapper application registers this package, then passes its enriched
 `request.log` to an application-local helper. The helper accepts a

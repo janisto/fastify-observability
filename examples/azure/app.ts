@@ -1,8 +1,8 @@
 import Fastify, { LogController } from "fastify";
-import fastifyObservability, { createRequestIdGenerator } from "fastify-observability";
+import fastifyObservability, { createObservabilityLogger, createRequestIdGenerator } from "fastify-observability";
 
 export const app = Fastify({
-  logger: true,
+  loggerInstance: createObservabilityLogger({ preset: "azure" }),
   requestIdHeader: false,
   genReqId: createRequestIdGenerator(),
   logController: new LogController({
@@ -11,4 +11,4 @@ export const app = Fastify({
   }),
 });
 
-app.register(fastifyObservability, { preset: "azure" });
+app.register(fastifyObservability);

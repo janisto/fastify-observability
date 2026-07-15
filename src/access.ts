@@ -1,5 +1,6 @@
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from "fastify";
 import type { NormalizedOptions } from "./context.js";
+import { bindingValuesEqual, PROTECTED_LOG_FIELDS } from "./logger.js";
 import { rawHeaderValues } from "./request-id.js";
 import type { AccessLogLevel } from "./types.js";
 
@@ -11,6 +12,8 @@ export interface AccessState {
   readonly reply: FastifyReply;
   readonly options: NormalizedOptions;
   readonly diagnose: (kind: string, message: string) => void;
+  readonly loggerBindings: Readonly<Record<string, unknown>>;
+  readonly inspectLoggerBindings?: () => Readonly<Record<string, unknown>>;
   logger: FastifyBaseLogger;
   remoteIp: string | undefined;
   userAgent: string | undefined;
@@ -28,43 +31,12 @@ interface StreamLike {
 }
 
 export const RESERVED_FIELDS = new Set([
-  "time",
-  "timestamp",
-  "level",
-  "severity",
-  "msg",
-  "message",
-  "pid",
-  "hostname",
+  ...PROTECTED_LOG_FIELDS,
   "name",
   "logger",
-  "reqId",
   "req",
   "res",
-  "err",
   "error",
-  "request_id",
-  "correlation_id",
-  "trace_id",
-  "parent_id",
-  "trace_flags",
-  "trace_sampled",
-  "method",
-  "path",
-  "path_template",
-  "operation_id",
-  "status",
-  "duration_ms",
-  "remote_ip",
-  "user_agent",
-  "terminal_reason",
-  "httpRequest",
-  "logging.googleapis.com/trace",
-  "logging.googleapis.com/trace_sampled",
-  "logging.googleapis.com/spanId",
-  "xray_trace_id",
-  "operation_Id",
-  "operation_ParentId",
   "__proto__",
   "constructor",
   "prototype",
@@ -142,21 +114,38 @@ function normalLevel(state: AccessState, status: number): AccessLogLevel {
   return defaultLevel(status);
 }
 
-function copyExtraFields(state: AccessState, fields: Record<string, unknown>): void {
+function copyExtraFields(
+  state: AccessState,
+  fields: Record<string, unknown>,
+  loggerBindings: Readonly<Record<string, unknown>>,
+): void {
   const callback = state.options.extraFields;
   if (callback === undefined) {
     return;
   }
   try {
     const result = callback(state.request, state.reply);
-    if (result === null || typeof result !== "object" || Array.isArray(result)) {
+    if (
+      result === null ||
+      typeof result !== "object" ||
+      Array.isArray(result) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(result))
+    ) {
       throw new TypeError("extraFields must return a record");
     }
-    const custom: Record<string, unknown> = {};
+    const custom = Object.create(null) as Record<string, unknown>;
     for (const key of Object.keys(result)) {
-      if (!RESERVED_FIELDS.has(key)) {
-        custom[key] = result[key];
+      if (RESERVED_FIELDS.has(key)) {
+        continue;
       }
+      const value = result[key];
+      if (Object.hasOwn(loggerBindings, key)) {
+        if (!bindingValuesEqual(loggerBindings[key], value)) {
+          state.diagnose("extra_fields_conflict", "an extra field conflicts with a logger binding; field omitted");
+        }
+        continue;
+      }
+      custom[key] = value;
     }
     for (const key of Object.keys(custom)) {
       fields[key] = custom[key];
@@ -166,7 +155,12 @@ function copyExtraFields(state: AccessState, fields: Record<string, unknown>): v
   }
 }
 
-function accessFields(state: AccessState, reason: TerminalReason, status: number | undefined): Record<string, unknown> {
+function accessFields(
+  state: AccessState,
+  reason: TerminalReason,
+  status: number | undefined,
+  loggerBindings: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
   const request = state.request;
   const durationMs = durationMilliseconds(state.started);
   const path = requestPath(request.raw.url);
@@ -213,8 +207,21 @@ function accessFields(state: AccessState, reason: TerminalReason, status: number
     }
     fields["httpRequest"] = httpRequest;
   }
-  copyExtraFields(state, fields);
+  copyExtraFields(state, fields, loggerBindings);
   return fields;
+}
+
+function terminalLoggerBindings(state: AccessState): Readonly<Record<string, unknown>> | undefined {
+  let bindings = state.loggerBindings;
+  if (state.inspectLoggerBindings !== undefined) {
+    try {
+      bindings = state.inspectLoggerBindings();
+    } catch {
+      state.diagnose("logger_bindings", "Pino bindings could not be verified; package access record omitted");
+      return undefined;
+    }
+  }
+  return bindings;
 }
 
 export function cleanupListeners(state: AccessState): void {
@@ -283,7 +290,12 @@ export function emitAccessRecord(state: AccessState, reason: TerminalReason, sta
         ? "error"
         : "warn";
   try {
-    state.logger[level](accessFields(state, reason, status), state.options.message);
+    const loggerBindings = terminalLoggerBindings(state);
+    if (loggerBindings === undefined) {
+      return;
+    }
+    const fields = accessFields(state, reason, status, loggerBindings);
+    state.logger[level](fields, state.options.message);
   } catch {
     state.diagnose("logger", "access log emission failed; the HTTP response was preserved");
   }

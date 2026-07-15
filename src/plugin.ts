@@ -1,7 +1,9 @@
 import type { FastifyBaseLogger, FastifyPluginCallback, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
+import type { Logger } from "pino";
 import { type AccessState, emitAccessRecord, observeStream, requestUserAgent } from "./access.js";
 import { createRequestObservability, normalizeOptions } from "./context.js";
+import { bindingValuesEqual, canonicalLoggerProfile, createCanonicalChild, PROTECTED_LOG_FIELDS } from "./logger.js";
 import { correlationFields } from "./presets.js";
 import { consumeRequestIdHandshake } from "./request-id.js";
 import type { FastifyObservabilityOptions, RequestObservability } from "./types.js";
@@ -11,12 +13,78 @@ const STATE = Symbol("fastify-observability.state");
 
 type InternalRequest = FastifyRequest & { [STATE]?: AccessState };
 
-interface BindingsLogger extends FastifyBaseLogger {
-  bindings(): Record<string, unknown>;
+type PinoLogger = FastifyBaseLogger & Logger;
+
+function isPinoLogger(logger: FastifyBaseLogger): logger is PinoLogger {
+  // The package marker establishes construction; these public methods verify the object still has Pino's contract.
+  try {
+    return (
+      typeof Reflect.get(logger, "version") === "string" &&
+      typeof Reflect.get(logger, "bindings") === "function" &&
+      typeof Reflect.get(logger, "isLevelEnabled") === "function"
+    );
+  } catch {
+    return false;
+  }
 }
 
-function hasBindings(logger: FastifyBaseLogger): logger is BindingsLogger {
-  return typeof Reflect.get(logger, "bindings") === "function";
+function snapshotBindings(logger: PinoLogger): Record<string, unknown> {
+  const bindings: unknown = logger.bindings();
+  if (bindings === null || typeof bindings !== "object" || Array.isArray(bindings)) {
+    throw new TypeError("logger bindings must be a record");
+  }
+  const snapshot = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(bindings)) {
+    snapshot[key] = Reflect.get(bindings, key);
+  }
+  return snapshot;
+}
+
+function validateRootBindings(bindings: Readonly<Record<string, unknown>>): void {
+  for (const key of Object.keys(bindings)) {
+    if (PROTECTED_LOG_FIELDS.has(key)) {
+      throw new Error(`fastify-observability reserves Pino base binding "${key}"`);
+    }
+  }
+}
+
+function validateChildBindings(
+  parent: Readonly<Record<string, unknown>>,
+  expected: Readonly<Record<string, unknown>>,
+  child: Readonly<Record<string, unknown>>,
+): void {
+  const allowed = new Set([...Object.keys(parent), ...Object.keys(expected)]);
+  for (const key of Object.keys(child)) {
+    if (!allowed.has(key)) {
+      throw new Error("Pino child introduced an unexpected binding");
+    }
+  }
+  for (const key of Object.keys(parent)) {
+    if (!Object.hasOwn(child, key) || !bindingValuesEqual(child[key], parent[key])) {
+      throw new Error("Pino child did not preserve its parent bindings");
+    }
+  }
+  for (const key of Object.keys(expected)) {
+    if (!Object.hasOwn(child, key) || !bindingValuesEqual(child[key], expected[key])) {
+      throw new Error("Pino child did not retain the package correlation bindings");
+    }
+  }
+}
+
+function validateStablePackageBindings(
+  initial: Readonly<Record<string, unknown>>,
+  current: Readonly<Record<string, unknown>>,
+): void {
+  const initialKeys = Object.keys(initial);
+  const currentKeys = Object.keys(current);
+  if (initialKeys.length !== currentKeys.length) {
+    throw new Error("Pino bindings changed after request setup");
+  }
+  for (const key of initialKeys) {
+    if (!Object.hasOwn(current, key) || !bindingValuesEqual(initial[key], current[key])) {
+      throw new Error("Pino bindings changed after request setup");
+    }
+  }
 }
 
 const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fastify, rawOptions, done) => {
@@ -27,7 +95,17 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
     if (fastify.initialConfig.requestIdHeader) {
       throw new Error("fastify-observability requires Fastify requestIdHeader: false");
     }
-    const options = normalizeOptions(rawOptions);
+    const rootLogger = fastify.log;
+    if (!isPinoLogger(rootLogger)) {
+      throw new Error("fastify-observability requires loggerInstance from createObservabilityLogger()");
+    }
+    const profile = canonicalLoggerProfile(rootLogger);
+    if (profile === undefined) {
+      throw new Error("fastify-observability requires loggerInstance from createObservabilityLogger()");
+    }
+    const rootBindings = snapshotBindings(rootLogger);
+    validateRootBindings(rootBindings);
+    const options = normalizeOptions(rawOptions, profile.preset);
     fastify.decorate(INSTALLED, true);
     fastify.decorateRequest("observability");
     fastify.decorateRequest(STATE);
@@ -38,6 +116,12 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
         return;
       }
       diagnostics.add(kind);
+      try {
+        rootLogger.warn({ observability_diagnostic: kind }, `fastify-observability: ${message}`);
+        return;
+      } catch {
+        // Fall through only when the configured Pino logger itself failed synchronously.
+      }
       try {
         process.stderr.write(`fastify-observability: ${message}\n`);
       } catch {
@@ -59,37 +143,60 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
         reply.header(options.responseHeader, context.requestId);
       }
 
-      let includeRequestId = true;
       let suppressAccess = false;
-      try {
-        if (hasBindings(request.log)) {
-          const bindings = request.log.bindings();
-          if (bindings["request_id"] === request.id) {
-            includeRequestId = false;
-          } else if (bindings["request_id"] !== undefined) {
-            includeRequestId = false;
+      let loggerBindings: Record<string, unknown> = {};
+      let logger = request.log;
+      let inspectLoggerBindings: (() => Readonly<Record<string, unknown>>) | undefined;
+      if (!isPinoLogger(request.log) || canonicalLoggerProfile(request.log) !== profile) {
+        suppressAccess = true;
+        diagnose("request_logger", "Fastify produced a noncanonical request logger; package access record omitted");
+      } else {
+        try {
+          const requestBindings = snapshotBindings(request.log);
+          if (Object.hasOwn(requestBindings, "reqId")) {
             suppressAccess = true;
             diagnose(
-              "conflicting_request_id",
-              "base logger has a conflicting request_id; package access record omitted",
+              "legacy_request_id_label",
+              "configure LogController requestIdLogLabel as request_id; package access record omitted",
             );
-          } else if (bindings["reqId"] === request.id) {
-            diagnose("legacy_request_id_label", "configure LogController requestIdLogLabel as request_id");
+          } else if (!bindingValuesEqual(requestBindings["request_id"], request.id)) {
+            suppressAccess = true;
+            diagnose(
+              "request_logger",
+              "Pino request logger lacks the canonical request_id binding; package access record omitted",
+            );
+          } else {
+            validateChildBindings(rootBindings, { request_id: request.id }, requestBindings);
+            const expected = correlationFields(context, options.preset);
+            const enrichment = { ...expected };
+            delete enrichment["request_id"];
+            const child = createCanonicalChild(request.log, enrichment);
+            if (!isPinoLogger(child) || canonicalLoggerProfile(child) !== profile) {
+              throw new TypeError("Pino child logger contract was not preserved");
+            }
+            const childBindings = snapshotBindings(child);
+            validateChildBindings(requestBindings, expected, childBindings);
+            logger = child;
+            loggerBindings = childBindings;
+            inspectLoggerBindings = () => {
+              const currentBindings = snapshotBindings(child);
+              validateStablePackageBindings(childBindings, currentBindings);
+              return currentBindings;
+            };
+            request.log = child;
+            reply.log = child;
           }
+        } catch {
+          suppressAccess = true;
+          diagnose("logger_setup", "Pino request logger setup failed; package access record omitted");
         }
-      } catch {
-        suppressAccess = true;
-        diagnose("logger_bindings", "logger bindings could not be inspected; package access record omitted");
       }
-
-      let logger = request.log;
+      let remoteIp: string | undefined;
       try {
-        logger = request.log.child(correlationFields(context, options.preset, includeRequestId));
-        request.log = logger;
-        reply.log = logger;
+        const candidate = request.ip;
+        remoteIp = typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
       } catch {
-        suppressAccess = true;
-        diagnose("logger_child", "request logger enrichment failed; package access record omitted");
+        diagnose("remote_ip", "remote IP resolution failed; remote_ip was omitted");
       }
       const state: AccessState = {
         started,
@@ -98,10 +205,12 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
         options,
         diagnose,
         logger,
-        remoteIp: typeof request.ip === "string" && request.ip.length > 0 ? request.ip : undefined,
+        loggerBindings,
+        remoteIp,
         userAgent: requestUserAgent(request),
         emitted: false,
         suppressAccess,
+        ...(inspectLoggerBindings === undefined ? {} : { inspectLoggerBindings }),
       };
       (request as InternalRequest)[STATE] = state;
       const closeListener = () => {

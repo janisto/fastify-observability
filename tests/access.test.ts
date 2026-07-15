@@ -1,7 +1,14 @@
 import { EventEmitter } from "node:events";
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from "fastify";
 import { describe, expect, it, vi } from "vitest";
-import { type AccessState, cleanupListeners, emitAccessRecord, observeStream, requestPath } from "../src/access.js";
+import {
+  type AccessState,
+  cleanupListeners,
+  emitAccessRecord,
+  observeStream,
+  requestPath,
+  requestUserAgent,
+} from "../src/access.js";
 import type { NormalizedOptions } from "../src/context.js";
 
 describe("access helpers", () => {
@@ -35,6 +42,16 @@ describe("access helpers", () => {
     expect(raw.listenerCount("close")).toBe(0);
   });
 
+  it("normalizes a non-Error stream failure without throwing it into the response lifecycle", () => {
+    const stream = new EventEmitter();
+    const state = {} as AccessState;
+
+    observeStream(state, stream);
+    stream.emit("error", "broken without an Error object");
+
+    expect(state.error).toEqual(new Error("response stream failed"));
+  });
+
   it("ignores values that are not streams", () => {
     const state = {} as AccessState;
     observeStream(state, null);
@@ -48,25 +65,49 @@ describe("access helpers", () => {
       diagnose,
       reply: { raw: new EventEmitter() },
     } as unknown as AccessState;
+    const once = vi.fn(() => {
+      throw new Error("attach failed");
+    });
+    const removeListener = vi.fn(() => {
+      throw new Error("cleanup failed");
+    });
     const stream = {
-      once: () => {
-        throw new Error("attach failed");
-      },
-      removeListener: () => {
-        throw new Error("cleanup failed");
-      },
+      once,
+      removeListener,
     };
     expect(() => observeStream(state, stream)).not.toThrow();
     expect(state.stream).toBeUndefined();
+    expect(once).toHaveBeenCalledWith("error", expect.any(Function));
+    expect(removeListener).toHaveBeenCalledWith("error", expect.any(Function));
     expect(diagnose).toHaveBeenCalledWith("stream_listener", expect.any(String));
+  });
+
+  it("uses only one unambiguous raw User-Agent value", () => {
+    const withHeaders = (rawHeaders: string[]) => ({ raw: { rawHeaders } }) as unknown as FastifyRequest;
+
+    expect(requestUserAgent(withHeaders(["User-Agent", "catalog-client/1.0"]))).toBe("catalog-client/1.0");
+    expect(requestUserAgent(withHeaders(["User-Agent", "first", "user-agent", "second"]))).toBeUndefined();
+    expect(requestUserAgent(withHeaders([]))).toBeUndefined();
   });
 
   function accessState(overrides: Partial<AccessState> = {}): {
     state: AccessState;
     log: ReturnType<typeof vi.fn>;
+    logs: {
+      debug: ReturnType<typeof vi.fn>;
+      info: ReturnType<typeof vi.fn>;
+      warn: ReturnType<typeof vi.fn>;
+      error: ReturnType<typeof vi.fn>;
+    };
     diagnose: ReturnType<typeof vi.fn>;
   } {
     const log = vi.fn();
+    const logs = {
+      debug: vi.fn((...arguments_: unknown[]) => log(...arguments_)),
+      info: vi.fn((...arguments_: unknown[]) => log(...arguments_)),
+      warn: vi.fn((...arguments_: unknown[]) => log(...arguments_)),
+      error: vi.fn((...arguments_: unknown[]) => log(...arguments_)),
+    };
     const diagnose = vi.fn();
     const raw = new EventEmitter() as EventEmitter & {
       url?: string;
@@ -92,7 +133,7 @@ describe("access helpers", () => {
       tracestateHeader: "tracestate",
       message: "request completed",
     });
-    const logger = { debug: log, info: log, warn: log, error: log } as unknown as FastifyBaseLogger;
+    const logger = logs as unknown as FastifyBaseLogger;
     return {
       state: {
         started: performance.now(),
@@ -101,6 +142,7 @@ describe("access helpers", () => {
         options,
         diagnose,
         logger,
+        loggerBindings: {},
         remoteIp: "127.0.0.1",
         userAgent: undefined,
         emitted: false,
@@ -108,48 +150,275 @@ describe("access helpers", () => {
         ...overrides,
       },
       log,
+      logs,
       diagnose,
     };
   }
 
   it("emits abnormal terminal records at most once", () => {
-    const { state, log } = accessState();
+    const { state, log, logs } = accessState();
     emitAccessRecord(state, "request_aborted");
     emitAccessRecord(state, "response", 200);
     expect(log).toHaveBeenCalledTimes(1);
+    expect(logs.warn).toHaveBeenCalledOnce();
     expect(log.mock.calls[0]?.[0]).toMatchObject({ terminal_reason: "request_aborted" });
   });
 
   it("uses error level for timeout and captured stream errors", () => {
     const timeout = accessState();
     emitAccessRecord(timeout.state, "timeout");
+    expect(timeout.logs.error).toHaveBeenCalledOnce();
+    expect(timeout.logs.warn).not.toHaveBeenCalled();
     expect(timeout.log.mock.calls[0]?.[0]).toMatchObject({ terminal_reason: "timeout" });
 
-    const stream = accessState({ error: new Error("broken") });
+    const streamError = new Error("broken");
+    const stream = accessState({ error: streamError });
     emitAccessRecord(stream.state, "response_aborted", 200);
+    expect(stream.logs.error).toHaveBeenCalledOnce();
+    expect(stream.logs.warn).not.toHaveBeenCalled();
     expect(stream.log.mock.calls[0]?.[0]).toMatchObject({ status: 200, terminal_reason: "response_aborted" });
+    const fields = stream.log.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(fields?.["err"]).toBe(streamError);
   });
 
-  it("suppresses conflicted access logs and contains logger failures", () => {
-    const suppressed = accessState({ suppressAccess: true });
-    emitAccessRecord(suppressed.state, "response", 200);
-    expect(suppressed.log).not.toHaveBeenCalled();
+  it.each([
+    [399, "info"],
+    [400, "warn"],
+    [499, "warn"],
+    [500, "error"],
+  ] as const)("maps status %i to %s at the built-in boundaries", (status, expectedLevel) => {
+    const sample = accessState();
+    emitAccessRecord(sample.state, "response", status);
 
+    expect(sample.logs[expectedLevel]).toHaveBeenCalledOnce();
+    for (const [level, method] of Object.entries(sample.logs)) {
+      if (level !== expectedLevel) {
+        expect(method).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it("emits exact monotonic and GCP HTTP timing fields", () => {
+    vi.spyOn(performance, "now").mockReturnValue(2_500);
+    const sample = accessState();
+    const state = {
+      ...sample.state,
+      started: 1_000,
+      options: { ...sample.state.options, preset: "gcp" as const },
+      remoteIp: "203.0.113.8",
+      userAgent: "catalog-client/1.0",
+    };
+
+    emitAccessRecord(state, "response", 204);
+
+    expect(sample.logs.info).toHaveBeenCalledOnce();
+    expect(sample.log.mock.calls[0]?.[0]).toMatchObject({
+      method: "GET",
+      path: "/resource",
+      path_template: "/resource",
+      status: 204,
+      duration_ms: 1_500,
+      remote_ip: "203.0.113.8",
+      user_agent: "catalog-client/1.0",
+      httpRequest: {
+        requestMethod: "GET",
+        requestUrl: "/resource",
+        status: 204,
+        latency: "1.5s",
+        remoteIp: "203.0.113.8",
+        userAgent: "catalog-client/1.0",
+      },
+    });
+  });
+
+  it("rounds fractional milliseconds to the nearest protobuf nanosecond", () => {
+    vi.spyOn(performance, "now").mockReturnValue(1_000.000_001);
+    const sample = accessState();
+    const state = {
+      ...sample.state,
+      started: 1_000,
+      options: { ...sample.state.options, preset: "gcp" as const },
+    };
+
+    emitAccessRecord(state, "response", 200);
+
+    const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(fields?.["duration_ms"]).toBeCloseTo(0.000_001, 9);
+    expect(fields?.["httpRequest"]).toMatchObject({ latency: "0.000000001s" });
+  });
+
+  it("clamps a negative duration to zero and omits an untrustworthy timeout status", () => {
+    vi.spyOn(performance, "now").mockReturnValue(900);
+    const sample = accessState();
+    const state = {
+      ...sample.state,
+      started: 1_000,
+      options: { ...sample.state.options, preset: "gcp" as const },
+      remoteIp: undefined,
+    };
+
+    emitAccessRecord(state, "timeout");
+
+    expect(sample.logs.error).toHaveBeenCalledOnce();
+    const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(fields).toMatchObject({
+      duration_ms: 0,
+      terminal_reason: "timeout",
+      httpRequest: { latency: "0s" },
+    });
+    expect(fields).not.toHaveProperty("status");
+    expect(fields).not.toHaveProperty("remote_ip");
+    expect(fields).not.toHaveProperty("user_agent");
+    expect(fields["httpRequest"]).not.toHaveProperty("status");
+    expect(fields["httpRequest"]).not.toHaveProperty("remoteIp");
+    expect(fields["httpRequest"]).not.toHaveProperty("userAgent");
+  });
+
+  it("contains listener-cleanup failures and still emits the terminal record", () => {
+    const closeListener = vi.fn();
+    const streamErrorListener = vi.fn();
+    const stateWithFailures = accessState({
+      reply: {
+        raw: {
+          removeListener: () => {
+            throw new Error("close cleanup failed");
+          },
+        },
+      } as unknown as FastifyReply,
+      closeListener,
+      stream: {
+        once: vi.fn(),
+        removeListener: () => {
+          throw new Error("stream cleanup failed");
+        },
+      },
+      streamErrorListener,
+    });
+
+    emitAccessRecord(stateWithFailures.state, "response", 200);
+
+    expect(stateWithFailures.logs.info).toHaveBeenCalledOnce();
+    expect(stateWithFailures.diagnose.mock.calls.map(([kind]) => kind)).toEqual([
+      "close_listener_cleanup",
+      "stream_listener_cleanup",
+    ]);
+    expect(stateWithFailures.state.closeListener).toBeUndefined();
+    expect(stateWithFailures.state.stream).toBeUndefined();
+    expect(stateWithFailures.state.streamErrorListener).toBeUndefined();
+  });
+
+  it("omits a hostile operationId without suppressing the access record", () => {
+    const sample = accessState();
+    const schema = Object.defineProperty({}, "operationId", {
+      enumerable: true,
+      get: () => {
+        throw new Error("schema getter failed");
+      },
+    });
+    Reflect.set(sample.state.request.routeOptions, "schema", schema);
+
+    emitAccessRecord(sample.state, "response", 200);
+
+    expect(sample.logs.info).toHaveBeenCalledOnce();
+    expect(sample.log.mock.calls[0]?.[0]).not.toHaveProperty("operation_id");
+  });
+
+  it("does not evaluate bindings or application callbacks after access suppression", () => {
+    const inspectLoggerBindings = vi.fn(() => ({}));
+    const levelForStatus = vi.fn(() => "debug" as const);
+    const extraFields = vi.fn(() => ({ unexpected: true }));
+    const closeListener = vi.fn();
+    const streamErrorListener = vi.fn();
+    const stream = new EventEmitter();
+    const suppressed = accessState({
+      suppressAccess: true,
+      inspectLoggerBindings,
+    });
+    suppressed.state.reply.raw.on("close", closeListener);
+    stream.on("error", streamErrorListener);
+    const state = {
+      ...suppressed.state,
+      closeListener,
+      stream,
+      streamErrorListener,
+      options: { ...suppressed.state.options, levelForStatus, extraFields },
+    };
+
+    emitAccessRecord(state, "response", 200);
+    emitAccessRecord(state, "response", 200);
+
+    expect(suppressed.log).not.toHaveBeenCalled();
+    expect(inspectLoggerBindings).not.toHaveBeenCalled();
+    expect(levelForStatus).not.toHaveBeenCalled();
+    expect(extraFields).not.toHaveBeenCalled();
+    expect(suppressed.diagnose).not.toHaveBeenCalled();
+    expect(state.reply.raw.listenerCount("close")).toBe(0);
+    expect(stream.listenerCount("error")).toBe(0);
+    expect(state.closeListener).toBeUndefined();
+    expect(state.stream).toBeUndefined();
+    expect(state.streamErrorListener).toBeUndefined();
+    expect(state.emitted).toBe(true);
+  });
+
+  it("marks emission complete and diagnoses a synchronous logger failure once", () => {
     const failed = accessState();
     failed.log.mockImplementation(() => {
       throw new Error("logger failed");
     });
     emitAccessRecord(failed.state, "response", 503);
+    emitAccessRecord(failed.state, "response", 503);
+
+    expect(failed.logs.error).toHaveBeenCalledOnce();
+    expect(failed.log).toHaveBeenCalledOnce();
+    expect(failed.state.emitted).toBe(true);
+    expect(failed.diagnose).toHaveBeenCalledOnce();
     expect(failed.diagnose).toHaveBeenCalledWith("logger", expect.any(String));
   });
 
-  it("omits invalid extra fields as one unit", () => {
+  it("diagnoses an invalid extra-fields return and still emits the base access record", () => {
     const invalid = accessState();
     const options = { ...invalid.state.options, extraFields: () => [] as never };
     const state = { ...invalid.state, options };
     emitAccessRecord(state, "response", 200);
-    expect(invalid.diagnose).toHaveBeenCalledWith("extra_fields", expect.any(String));
 
+    expect(invalid.logs.info).toHaveBeenCalledOnce();
+    expect(invalid.log.mock.calls[0]?.[0]).toMatchObject({ method: "GET", path: "/resource", status: 200 });
+    expect(invalid.diagnose).toHaveBeenCalledWith("extra_fields", expect.any(String));
+  });
+
+  it("diagnoses an asynchronous extra-fields callback instead of silently dropping its result", () => {
+    const asynchronous = accessState();
+    const options = {
+      ...asynchronous.state.options,
+      extraFields: (async () => ({ must_not_appear: true })) as never,
+    };
+    const state = { ...asynchronous.state, options };
+
+    emitAccessRecord(state, "response", 200);
+
+    expect(asynchronous.logs.info).toHaveBeenCalledOnce();
+    expect(asynchronous.log.mock.calls[0]?.[0]).toMatchObject({ method: "GET", path: "/resource", status: 200 });
+    expect(asynchronous.log.mock.calls[0]?.[0]).not.toHaveProperty("must_not_appear");
+    expect(asynchronous.diagnose).toHaveBeenCalledWith("extra_fields", expect.any(String));
+  });
+
+  it("accepts a null-prototype extra-fields record", () => {
+    const sample = accessState();
+    const custom = Object.create(null) as Record<string, unknown>;
+    custom["component"] = "catalog";
+    const state = {
+      ...sample.state,
+      options: { ...sample.state.options, extraFields: () => custom },
+    };
+
+    emitAccessRecord(state, "response", 200);
+
+    expect(sample.logs.info).toHaveBeenCalledOnce();
+    expect(sample.log.mock.calls[0]?.[0]).toMatchObject({ component: "catalog" });
+    expect(sample.diagnose).not.toHaveBeenCalled();
+  });
+
+  it("diagnoses extra-fields enumeration failure and still emits the base access record", () => {
     const throwing = accessState();
     const proxy = new Proxy(
       {},
@@ -164,6 +433,83 @@ describe("access helpers", () => {
       "response",
       200,
     );
+
+    expect(throwing.logs.info).toHaveBeenCalledOnce();
+    expect(throwing.log.mock.calls[0]?.[0]).toMatchObject({ method: "GET", path: "/resource", status: 200 });
     expect(throwing.diagnose).toHaveBeenCalledWith("extra_fields", expect.any(String));
+  });
+
+  it("does not leak partially copied extra fields when a later getter throws", () => {
+    const partial = accessState();
+    const result = Object.defineProperties(
+      {},
+      {
+        first: { enumerable: true, value: "must not leak" },
+        second: {
+          enumerable: true,
+          get: () => {
+            throw new Error("blocked");
+          },
+        },
+      },
+    );
+    emitAccessRecord(
+      { ...partial.state, options: { ...partial.state.options, extraFields: () => result } },
+      "response",
+      200,
+    );
+
+    expect(partial.logs.info).toHaveBeenCalledOnce();
+    expect(partial.log.mock.calls[0]?.[0]).toMatchObject({ method: "GET", path: "/resource", status: 200 });
+    expect(partial.log.mock.calls[0]?.[0]).not.toHaveProperty("first");
+    expect(partial.diagnose).toHaveBeenCalledWith("extra_fields", expect.any(String));
+  });
+
+  it("omits extra fields that conflict with logger bindings", () => {
+    const equal = accessState({ loggerBindings: { component: "catalog" } });
+    emitAccessRecord(
+      {
+        ...equal.state,
+        options: { ...equal.state.options, extraFields: () => ({ component: "catalog", region: "eu" }) },
+      },
+      "response",
+      200,
+    );
+    expect(equal.logs.info).toHaveBeenCalledOnce();
+    expect(equal.log.mock.calls[0]?.[0]).not.toHaveProperty("component");
+    expect(equal.log.mock.calls[0]?.[0]).toMatchObject({ region: "eu" });
+    expect(equal.diagnose).not.toHaveBeenCalled();
+
+    const conflicting = accessState({ loggerBindings: { component: "gateway" } });
+    emitAccessRecord(
+      {
+        ...conflicting.state,
+        options: { ...conflicting.state.options, extraFields: () => ({ component: "catalog", region: "eu" }) },
+      },
+      "response",
+      200,
+    );
+    expect(conflicting.log).toHaveBeenCalledOnce();
+    expect(conflicting.log.mock.calls[0]?.[0]).not.toHaveProperty("component");
+    expect(conflicting.log.mock.calls[0]?.[0]).toMatchObject({ region: "eu" });
+    expect(conflicting.diagnose).toHaveBeenCalledWith("extra_fields_conflict", expect.any(String));
+  });
+
+  it("reinspects Pino bindings before terminal emission", () => {
+    const stable = accessState({
+      loggerBindings: { request_id: "stable" },
+      inspectLoggerBindings: () => ({ request_id: "stable" }),
+    });
+    emitAccessRecord(stable.state, "response", 200);
+    expect(stable.log).toHaveBeenCalledOnce();
+
+    const unreadable = accessState({
+      inspectLoggerBindings: () => {
+        throw new Error("unreadable");
+      },
+    });
+    emitAccessRecord(unreadable.state, "response", 200);
+    expect(unreadable.log).not.toHaveBeenCalled();
+    expect(unreadable.diagnose).toHaveBeenCalledWith("logger_bindings", expect.any(String));
   });
 });

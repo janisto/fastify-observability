@@ -1,13 +1,9 @@
 import Fastify, { LogController } from "fastify";
-import fastifyObservability, { createRequestIdGenerator } from "fastify-observability";
+import fastifyObservability, { createObservabilityLogger, createRequestIdGenerator } from "fastify-observability";
 import * as applog from "./applog.js";
 
 export const app = Fastify({
-  logger: {
-    formatters: {
-      level: (label) => ({ severity: label.toUpperCase() }),
-    },
-  },
+  loggerInstance: createObservabilityLogger({ preset: "gcp" }),
   requestIdHeader: false,
   genReqId: createRequestIdGenerator(),
   logController: new LogController({
@@ -16,7 +12,7 @@ export const app = Fastify({
   }),
 });
 
-app.register(fastifyObservability, { preset: "gcp" });
+app.register(fastifyObservability);
 
 app.get<{ Params: { itemId: string } }>("/items/:itemId", (request) => {
   applog.info(request.log, "loading item", { item_id: request.params.itemId });

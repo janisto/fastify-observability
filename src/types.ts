@@ -22,7 +22,6 @@ export type LevelForStatus = (status: number) => AccessLogLevel;
 export type ExtraFields = (request: FastifyRequest, reply: FastifyReply) => Readonly<Record<string, unknown>>;
 
 export interface FastifyObservabilityOptions {
-  preset?: LoggingPreset;
   requestIdHeader?: string;
   responseHeader?: string | false;
   traceHeader?: string;
@@ -35,5 +34,5 @@ export interface FastifyObservabilityOptions {
 export interface RequestIdGeneratorOptions {
   requestIdHeader?: string;
   generate?: () => string;
-  validate?: (value: string) => boolean;
+  validateIncoming?: (value: string) => boolean;
 }

@@ -20,12 +20,24 @@ export interface NormalizedOptions {
   readonly extraFields?: ExtraFields;
 }
 
-const PRESETS = new Set<LoggingPreset>(["default", "gcp", "aws", "azure"]);
+const OPTION_KEYS = new Set([
+  "requestIdHeader",
+  "responseHeader",
+  "traceHeader",
+  "tracestateHeader",
+  "message",
+  "levelForStatus",
+  "extraFields",
+]);
 
-export function normalizeOptions(options: FastifyObservabilityOptions): NormalizedOptions {
-  const preset = options.preset ?? "default";
-  if (!PRESETS.has(preset)) {
-    throw new TypeError("preset must be default, gcp, aws, or azure");
+export function normalizeOptions(options: FastifyObservabilityOptions, preset: LoggingPreset): NormalizedOptions {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("plugin options must be a record");
+  }
+  for (const key of Object.keys(options)) {
+    if (!OPTION_KEYS.has(key)) {
+      throw new TypeError(`unsupported fastify-observability option "${key}"`);
+    }
   }
   const requestIdHeader = normalizeHeaderName(options.requestIdHeader ?? "x-request-id", "requestIdHeader");
   const traceHeader = normalizeHeaderName(options.traceHeader ?? "traceparent", "traceHeader");

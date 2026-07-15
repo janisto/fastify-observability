@@ -12,6 +12,7 @@ interface RequestIdHandshake {
 }
 
 const requestIdHandshakes = new WeakMap<RawRequest, RequestIdHandshake>();
+const REQUEST_ID_OPTION_KEYS = new Set(["requestIdHeader", "generate", "validateIncoming"]);
 let emergencyCounter = 0;
 
 export function isValidRequestId(value: unknown): value is string {
@@ -44,15 +45,15 @@ export function rawHeaderValues(request: RawRequest, headerName: string): string
   return values;
 }
 
-function passesCustomValidator(value: string, validate: ((value: string) => boolean) | undefined): boolean {
+function validIncomingRequestId(value: string, validateIncoming: ((value: string) => boolean) | undefined): boolean {
   if (!isValidRequestId(value)) {
     return false;
   }
-  if (validate === undefined) {
+  if (validateIncoming === undefined) {
     return true;
   }
   try {
-    return validate(value) === true;
+    return validateIncoming(value) === true;
   } catch {
     return false;
   }
@@ -75,15 +76,12 @@ function safeFallbackRequestId(): string {
   }
 }
 
-function generateRequestId(
-  generate: (() => string) | undefined,
-  validate: ((value: string) => boolean) | undefined,
-): string {
+function generateRequestId(generate: (() => string) | undefined): string {
   if (generate !== undefined) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const candidate = generate();
-        if (passesCustomValidator(candidate, validate)) {
+        if (isValidRequestId(candidate)) {
           return candidate;
         }
       } catch {
@@ -95,22 +93,30 @@ function generateRequestId(
 }
 
 export function createRequestIdGenerator(options: RequestIdGeneratorOptions = {}): (request: RawRequest) => string {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("request-ID generator options must be a record");
+  }
+  for (const key of Object.keys(options)) {
+    if (!REQUEST_ID_OPTION_KEYS.has(key)) {
+      throw new TypeError(`unsupported request-ID generator option "${key}"`);
+    }
+  }
   const header = normalizeHeaderName(options.requestIdHeader ?? "x-request-id", "requestIdHeader");
   if (options.generate !== undefined && typeof options.generate !== "function") {
     throw new TypeError("generate must be a function");
   }
-  if (options.validate !== undefined && typeof options.validate !== "function") {
-    throw new TypeError("validate must be a function");
+  if (options.validateIncoming !== undefined && typeof options.validateIncoming !== "function") {
+    throw new TypeError("validateIncoming must be a function");
   }
   const generate = options.generate;
-  const validate = options.validate;
+  const validateIncoming = options.validateIncoming;
   return (request) => {
     const values = rawHeaderValues(request, header);
     const candidate = values.length === 1 ? values[0] : undefined;
     const requestId =
-      candidate !== undefined && passesCustomValidator(candidate, validate)
+      candidate !== undefined && validIncomingRequestId(candidate, validateIncoming)
         ? candidate
-        : generateRequestId(generate, validate);
+        : generateRequestId(generate);
     requestIdHandshakes.set(request, { header, requestId });
     return requestId;
   };
