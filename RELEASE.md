@@ -46,8 +46,10 @@ npm provenance. The workflow does not need `--provenance` and does not use
 | --- | --- |
 | npm package | `fastify-observability` |
 | GitHub repository | `janisto/fastify-observability` |
+| Package repository URL | `git+https://github.com/janisto/fastify-observability.git` |
 | Workflow | `.github/workflows/release.yml` |
 | GitHub Environment | `npm` |
+| Runner | GitHub-hosted `ubuntu-latest` |
 | Workflow trigger | GitHub Release `published` |
 | Trusted-publisher permission | **Allow npm stage publish** only |
 | Workflow stage command | `pnpm stage publish` |
@@ -59,6 +61,14 @@ npm provenance. The workflow does not need `--provenance` and does not use
 The npm trusted-publisher form uses the workflow filename `release.yml`, not
 the full `.github/workflows/release.yml` path. All identity fields are
 case-sensitive.
+
+npm does not validate the trusted-publisher identity when the configuration is
+saved; mismatches surface only when staging is attempted. Before the first
+trusted release, and after changing the repository owner or name, workflow
+filename, Environment, or package repository metadata, reopen the npm package
+settings and verify them against this table. The workflow must remain on a
+GitHub-hosted runner because npm trusted publishing does not support self-hosted
+runners.
 
 ## What the workflow does
 
@@ -270,9 +280,12 @@ public-release verification cannot alter this repository's lockfile.
 
 ## Failure and recovery
 
-- **OIDC reports `E404`:** Check the npm trusted publisher's owner, repository,
-  workflow filename, Environment, and stage-only permission. Check that the job
-  has `id-token: write`. Do not add a token fallback.
+- **OIDC reports `E404` or `ENEEDAUTH`:** Check the npm trusted publisher's
+  case-sensitive owner, repository, workflow filename, Environment, and
+  stage-only permission. Verify that the job uses a GitHub-hosted runner and has
+  `id-token: write`, and that `package.json#repository.url` identifies this
+  exact GitHub repository. A successfully saved npm configuration is not proof
+  that these values match. Do not add a token fallback.
 - **The workflow fails before staging:** No npm version was published. A purely
   transient run may be retried against the unchanged release. A source or
   workflow correction requires a new reviewed version and GitHub Release.
