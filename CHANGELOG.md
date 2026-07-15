@@ -7,6 +7,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- Removed setup-node's token-oriented npm registry configuration from trusted
+  publishing, eliminating the unused `${NODE_AUTH_TOKEN}` placeholder while
+  retaining registry selection through `package.json#publishConfig`.
+
 ## [0.2.0] - 2026-07-15
 
 ### Added
