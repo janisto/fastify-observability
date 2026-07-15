@@ -1,9 +1,10 @@
 import type { FastifyBaseLogger } from "fastify";
+import type { Level } from "pino";
 
 type Fields = Readonly<Record<string, unknown>>;
-type LogLevel = "debug" | "info" | "warn" | "error";
 
-export function log(logger: FastifyBaseLogger, level: LogLevel, message: string, fields: Fields = {}): void {
+/** Write a structured message through an application-provided Fastify logger. */
+export function log(logger: FastifyBaseLogger, level: Level, message: string, fields: Fields = {}): void {
   logger[level](fields, message);
 }
 

@@ -77,6 +77,11 @@ The returned value is still a normal Pino logger, including
 Use `app.log`, `request.log`, and `reply.log` for application records; no wrapper
 logging API is introduced.
 
+Applications that prefer shorter local helpers can wrap those Fastify loggers
+without introducing another backend or global logger. The copyable
+[`examples/local_wrapper/applog.ts`](examples/local_wrapper/applog.ts) helper
+accepts `request.log` explicitly, so request and trace bindings are preserved.
+
 ## Logger configuration
 
 `createObservabilityLogger()` accepts only options that preserve the package
@@ -296,11 +301,21 @@ follows semantic versioning. During `0.x`, option behavior and structured-field
 changes are called out in [CHANGELOG.md](CHANGELOG.md). Deep imports are
 unsupported.
 
+Development requires [pnpm 11.13.0](https://pnpm.io/installation), pinned by
+the `packageManager` field, and [just](https://github.com/casey/just). With both
+installed, use the repository's grouped commands:
+
 ```bash
-corepack enable
-pnpm install --frozen-lockfile
-pnpm qa
+just install
+just qa
 ```
+
+The [`Justfile`](Justfile) groups the common test, QA, package, and lifecycle
+commands. `just qa` removes `dist/` before running the same `pnpm qa` gate used
+for releases, preventing deleted or renamed modules from surviving a local
+rebuild. `just clean` removes generated outputs but preserves installed
+dependencies; use `just fresh` for a clean dependency installation. The pnpm
+scripts remain available directly for CI and environments without `just`.
 
 The complete gate covers formatting/lint, strict TypeScript, unit and real
 HTTP/1.1/HTTP/2 behavior, raw log-line assertions, 90% global coverage
@@ -308,6 +323,36 @@ thresholds, and build output.
 
 Releases use GitHub OIDC and npm trusted publishing without a stored npm write
 token. See [RELEASE.md](RELEASE.md).
+
+## References
+
+- [Fastify logging](https://fastify.dev/docs/latest/Reference/Logging/) documents
+  Pino integration, `loggerInstance`, request logging, serializers, redaction,
+  and the unvalidated `requestIdHeader` behavior narrowed by this package.
+- [Fastify server options](https://fastify.dev/docs/latest/Reference/Server/)
+  document `LogController`, `disableRequestLogging`, `requestIdLogLabel`,
+  `requestIdHeader`, and `genReqId`.
+- [Fastify request](https://fastify.dev/docs/latest/Reference/Request/) documents
+  `request.id`, `request.log`, and proxy-aware `request.ip`.
+- [Pino `bindings()`](https://github.com/pinojs/pino/blob/v10.3.1/docs/api.md#loggerbindings),
+  the [child-logger duplicate-key caveat](https://github.com/pinojs/pino/blob/v10.3.1/docs/child-loggers.md#duplicate-keys-caveat),
+  and [redaction](https://github.com/pinojs/pino/blob/v10.3.1/docs/redaction.md)
+  define the logger behavior guarded by the package.
+- [W3C Trace Context](https://www.w3.org/TR/trace-context/) defines strict
+  `traceparent` and `tracestate` syntax and identifies `parent-id` as the
+  caller's span rather than a span created by this service.
+- [Google Cloud trace and log integration](https://docs.cloud.google.com/trace/docs/trace-log-integration)
+  documents the bare `TRACE_ID` as the preferred trace field format.
+- [Google Cloud Trace release notes](https://docs.cloud.google.com/trace/docs/release-notes)
+  record the January 26, 2026 change that made the trace ID preferred while
+  retaining the full project resource name as a supported legacy format.
+- [Google Cloud structured logging](https://docs.cloud.google.com/logging/docs/structured-logging)
+  documents `severity`, `message`, `httpRequest`, and the special
+  `logging.googleapis.com/*` JSON fields.
+- [AWS X-Ray trace IDs](https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html)
+  document converting a W3C trace ID to `1-8hex-24hex` form.
+- [Azure Application Insights data model](https://learn.microsoft.com/en-us/azure/azure-monitor/app/data-model-complete)
+  documents `operation_Id` and `operation_ParentId` correlation fields.
 
 ## License
 

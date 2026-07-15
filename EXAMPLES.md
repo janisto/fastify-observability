@@ -11,7 +11,7 @@ registering its plugins and routes.
 | [`examples/basic/app.ts`](examples/basic/app.ts) | Provider-neutral Pino fields |
 | [`examples/aws/app.ts`](examples/aws/app.ts) | Flat derived X-Ray trace correlation without an AWS SDK |
 | [`examples/azure/app.ts`](examples/azure/app.ts) | Flat Azure operation correlation without an Azure SDK |
-| [`examples/local_wrapper/app.ts`](examples/local_wrapper/app.ts) | GCP setup using optional explicit-logger application helpers |
+| [`examples/local_wrapper/applog.ts`](examples/local_wrapper/applog.ts) | Optional application-local logging helpers |
 
 The setup modules export `app` only so an application can add its own plugins,
 routes, and startup policy. TypeScript checks every example as part of
@@ -22,16 +22,18 @@ plugin derives it from that logger. In the GCP example,
 `logging.googleapis.com/trace` intentionally remains the bare trace ID from the
 validated W3C `traceparent`; no project resource prefix is added.
 
-The local wrapper application registers this package, then passes its enriched
-`request.log` to an application-local helper. The helper accepts a
-`FastifyBaseLogger` explicitly, preserving request and trace bindings:
+The optional local wrapper contains only small application helpers; it does not
+duplicate Fastify or plugin setup. Pass the enriched `request.log` explicitly
+to preserve request and trace bindings without global state or ambient request
+context:
 
 ```ts
-import * as applog from "../local_wrapper/applog.js";
+import * as applog from "./applog.js";
 
 applog.info(request.log, "loading item", { item_id: "42" });
 applog.error(request.log, "item load failed", error, { item_id: "42" });
 ```
 
-It provides `debug`, `info`, `warn`, `error`, and arbitrary supported-level
-helpers without global state or ambient request context.
+The helper provides `debug`, `info`, `warn`, `error`, and `log` for any standard
+Pino level. It is application convenience, not package configuration or a
+second logger abstraction.

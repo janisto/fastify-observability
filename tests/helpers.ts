@@ -76,7 +76,7 @@ export function topLevelKeyOccurrences(line: string, key: string): number {
 
 export async function buildTestApp(
   pluginOptions: FastifyObservabilityOptions = {},
-  setup: { canonicalLabel?: boolean; level?: "debug" | "silent"; preset?: LoggingPreset } = {},
+  setup: { canonicalLabel?: boolean; level?: "trace" | "debug" | "silent"; preset?: LoggingPreset } = {},
 ) {
   const stream = new JsonLineStream();
   const canonicalLabel = setup.canonicalLabel ?? true;

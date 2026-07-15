@@ -4,7 +4,7 @@
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!**/coverage/**/*", "!**/dist/**/*", "!**/node_modules/**/*", "!**/pnpm-lock.yaml"]
+    "includes": ["**", "!!artifacts", "!!coverage", "!!dist", "!pnpm-lock.yaml"]
   },
   "formatter": {
     "enabled": true,
@@ -19,8 +19,15 @@
     "domains": { "project": "recommended", "test": "recommended", "types": "recommended" },
     "rules": {
       "preset": "recommended",
-      "complexity": { "useLiteralKeys": "off" },
+      "complexity": {
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": { "maxAllowedComplexity": 30 }
+        },
+        "useLiteralKeys": "off"
+      },
       "correctness": {
+        "noUndeclaredDependencies": "error",
         "noUnusedImports": "error",
         "noUnusedVariables": "error",
         "noUnusedFunctionParameters": "error",
@@ -31,12 +38,56 @@
         "noNonNullAssertion": "error",
         "useConst": "error",
         "useImportType": "error",
-        "useNodejsImportProtocol": "error"
+        "useNodejsImportProtocol": "error",
+        "useTemplate": "error"
       },
-      "suspicious": { "noConsole": "error", "noDebugger": "error", "noExplicitAny": "error" },
-      "performance": { "noAccumulatingSpread": "error", "noAwaitInLoops": "error" }
+      "suspicious": {
+        "noConsole": "error",
+        "noDebugger": "error",
+        "noDeprecatedImports": "error",
+        "noExplicitAny": "error",
+        "noImportCycles": "error",
+        "noShadow": "error"
+      },
+      "performance": { "noAccumulatingSpread": "error", "noAwaitInLoops": "error" },
+      "nursery": {
+        "noFloatingPromises": "error",
+        "noMisusedPromises": "error",
+        "noUnsafePlusOperands": "error",
+        "useAwaitThenable": "error",
+        "useExhaustiveSwitchCases": "error",
+        "useNullishCoalescing": "error"
+      }
     }
   },
   "javascript": { "formatter": { "quoteStyle": "double", "semicolons": "always", "trailingCommas": "all" } },
-  "json": { "formatter": { "trailingCommas": "none" } }
+  "json": { "formatter": { "trailingCommas": "none" } },
+  "overrides": [
+    {
+      "includes": ["src/**/*.ts"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "useImportExtensions": {
+              "level": "error",
+              "options": { "forceJsExtensions": true }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["tests/**/*.ts"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": { "maxAllowedComplexity": 40 }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

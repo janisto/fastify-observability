@@ -83,66 +83,20 @@ describe("examples", () => {
     }
   });
 
-  it("runs the local-wrapper item route with its GCP request logger", async () => {
-    vi.resetModules();
-    const [{ app }, { canonicalLoggerProfile }] = await Promise.all([
-      import("../examples/local_wrapper/app.js"),
-      import("../src/logger.js"),
-    ]);
-    let requestBindings: Record<string, unknown> | undefined;
-    try {
-      Reflect.set(app.log, "level", "silent");
-      app.addHook("preHandler", (request, _reply, done) => {
-        requestBindings = bindings(request.log);
-        done();
-      });
-      await app.ready();
-      const response = await app.inject({
-        url: "/items/42",
-        headers: { "x-request-id": "wrapper-request", traceparent: TRACEPARENT },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(response.headers["x-request-id"]).toBe("wrapper-request");
-      expect(response.json()).toEqual({ itemId: "42" });
-      expect(canonicalLoggerProfile(app.log)).toEqual({ preset: "gcp" });
-      expect(app.hasRequestDecorator("observability")).toBe(true);
-      expect(app.hasRoute({ method: "GET", url: "/items/:itemId" })).toBe(true);
-      expect(requestBindings).toMatchObject({
-        request_id: "wrapper-request",
-        correlation_id: TRACE_ID,
-        "logging.googleapis.com/trace": TRACE_ID,
-      });
-      expect(requestBindings?.["logging.googleapis.com/spanId"]).toBeUndefined();
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("keeps local wrapper levels, fields, and errors on the provided logger", () => {
-    const debug = vi.fn();
-    const info = vi.fn();
-    const warn = vi.fn();
-    const error = vi.fn();
-    const logger = { debug, info, warn, error } as unknown as FastifyBaseLogger;
-    applog.debug(logger, "debug", { component: "test" });
-    applog.info(logger, "info");
-    applog.warn(logger, "warn");
-    applog.log(logger, "error", "generic");
-    const cause = new Error("failed");
-    applog.error(logger, "error", cause, { component: "test", err: "hidden" });
-    expect(debug).toHaveBeenCalledWith({ component: "test" }, "debug");
-    expect(info).toHaveBeenCalledWith({}, "info");
-    expect(warn).toHaveBeenCalledWith({}, "warn");
-    expect(error).toHaveBeenCalledTimes(2);
-    expect(error).toHaveBeenNthCalledWith(1, {}, "generic");
-    expect(error).toHaveBeenNthCalledWith(2, { component: "test", err: cause }, "error");
-  });
-
-  it("uses the package-enriched request logger in the local wrapper", async () => {
-    const { app, records } = await buildTestApp({}, { preset: "gcp" });
+  it("preserves structured fields, levels, errors, and request bindings through the local wrapper", async () => {
+    const { app, records } = await buildTestApp({}, { preset: "gcp", level: "trace" });
     app.get<{ Params: { itemId: string } }>("/items/:itemId", (request) => {
-      applog.info(request.log, "loading item", { item_id: request.params.itemId });
+      const fields = { item_id: request.params.itemId };
+      applog.debug(request.log, "debug helper", { ...fields, helper: "debug" });
+      applog.info(request.log, "info helper", { ...fields, helper: "info" });
+      applog.warn(request.log, "warn helper", { ...fields, helper: "warn" });
+      applog.error(request.log, "error helper", new Error("boom"), {
+        ...fields,
+        helper: "error",
+        err: "must not replace the Error",
+      });
+      applog.log(request.log, "trace", "trace helper", { ...fields, helper: "log:trace" });
+      applog.log(request.log, "fatal", "fatal helper", { ...fields, helper: "log:fatal" });
       return { itemId: request.params.itemId };
     });
     try {
@@ -151,12 +105,37 @@ describe("examples", () => {
         headers: { "x-request-id": "wrapper-id", traceparent: TRACEPARENT },
       });
       expect(response.statusCode).toBe(200);
-      expect(records.find((record) => record.message === "loading item")).toMatchObject({
-        request_id: "wrapper-id",
-        correlation_id: TRACE_ID,
-        "logging.googleapis.com/trace": TRACE_ID,
-        item_id: "42",
+      expect(response.headers["x-request-id"]).toBe("wrapper-id");
+      expect(response.json()).toEqual({ itemId: "42" });
+
+      const expectedHelpers = [
+        ["debug helper", "DEBUG", "debug"],
+        ["info helper", "INFO", "info"],
+        ["warn helper", "WARNING", "warn"],
+        ["error helper", "ERROR", "error"],
+        ["trace helper", "DEBUG", "log:trace"],
+        ["fatal helper", "CRITICAL", "log:fatal"],
+      ] as const;
+      for (const [message, severity, helper] of expectedHelpers) {
+        expect(records.find((record) => record.message === message)).toMatchObject({
+          severity,
+          request_id: "wrapper-id",
+          correlation_id: TRACE_ID,
+          trace_id: TRACE_ID,
+          trace_sampled: true,
+          "logging.googleapis.com/trace": TRACE_ID,
+          "logging.googleapis.com/trace_sampled": true,
+          item_id: "42",
+          helper,
+        });
+      }
+      expect(records.find((record) => record.message === "error helper")?.["err"]).toMatchObject({
+        type: "Error",
+        message: "boom",
       });
+      for (const record of records) {
+        expect(record["logging.googleapis.com/spanId"]).toBeUndefined();
+      }
       expect(accessRecords(records)).toHaveLength(1);
     } finally {
       await app.close();

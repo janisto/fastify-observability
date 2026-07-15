@@ -50,6 +50,8 @@ npm provenance. The workflow does not need `--provenance` and does not use
 | GitHub Environment | `npm` |
 | Workflow trigger | GitHub Release `published` |
 | Trusted action | `npm stage publish` only |
+| Release notes | GitHub-generated and maintainer-reviewed |
+| Stable GitHub Release label | `Latest` |
 | Stable npm dist-tag | `latest` |
 | Prerelease npm dist-tag | `next` |
 
@@ -93,18 +95,24 @@ and documentation must be reviewed together.
 ### 2. Run the release checks
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm qa
-pnpm audit --prod
-pnpm pack --dry-run
+just install
+just package-check
+just audit
 actionlint .github/workflows/ci.yml .github/workflows/release.yml
 git diff --check
 ```
 
-Review the package file list printed by `pnpm pack --dry-run`. It must contain
+`just package-check` removes `dist/`, runs the complete `pnpm qa` gate, rebuilds
+the package, and prints the `pnpm pack --dry-run` file list. Cleaning `dist/`
+prevents files from deleted or renamed source modules from surviving a local
+rebuild. Review the printed package file list. It must contain
 the compiled package, declarations, README, changelog, license, and package
 metadata—never local plans, tests, coverage, environment files, npm
 configuration, or credentials.
+
+The release workflow intentionally continues to invoke pnpm directly. GitHub
+Actions starts from a fresh checkout, while the Justfile is the maintainer-facing
+local workflow and cleanup layer.
 
 Merge the release preparation through a green pull request to `main`.
 
@@ -117,9 +125,52 @@ From the repository's GitHub Releases page:
    `package.json.version`;
 3. target the exact reviewed commit on `main`;
 4. use `vX.Y.Z` as the title;
-5. write release notes from `CHANGELOG.md`;
-6. mark the release as a prerelease only for a SemVer prerelease;
-7. review everything, then publish the release.
+5. click **Generate release notes**;
+6. review the generated previous tag, merged pull requests, contributors, and
+   full-changelog link, then edit only for accuracy and clarity; ensure the
+   user-visible changes agree with `CHANGELOG.md`;
+7. for a stable version, leave **This is a pre-release** cleared and select
+   **Set as latest release**;
+8. review the tag, target commit, title, generated notes, and release labels,
+   then publish the release.
+
+The only exception to the Latest rule is a SemVer prerelease. For a prerelease,
+select **This is a pre-release** and do not select **Set as latest release**;
+the workflow stages it with npm dist-tag `next` instead of replacing the stable
+GitHub Latest release or npm `latest` dist-tag.
+
+The equivalent draft-first GitHub CLI flow is:
+
+```bash
+VERSION="$(node -p "require('./package.json').version")"
+git fetch origin main
+TARGET="$(git rev-parse origin/main)"
+
+gh release create "v$VERSION" \
+  --target "$TARGET" \
+  --title "v$VERSION" \
+  --generate-notes \
+  --latest \
+  --fail-on-no-commits \
+  --draft
+
+gh release view "v$VERSION" --web
+```
+
+Before creating the draft, verify that `TARGET` is the exact reviewed commit
+that should be released. Do not use a newer unreviewed `main` commit merely
+because it is currently at the branch tip.
+
+After reviewing the draft in the browser, publish the unchanged stable release
+and explicitly preserve its Latest label:
+
+```bash
+gh release edit "v$VERSION" --draft=false --latest
+```
+
+For a SemVer prerelease, replace `--latest` in the create command with
+`--prerelease --latest=false`, and publish it with
+`--draft=false --prerelease --latest=false`.
 
 Do not push the release tag separately. The published GitHub Release is the
 authorization event, and release immutability locks its tag and release assets.
@@ -191,6 +242,7 @@ Finally, verify:
 - the npm package page shows provenance for the release;
 - provenance points to this repository and `release.yml`;
 - the GitHub Release tag points to the reviewed commit;
+- a stable GitHub Release carries the **Latest** label;
 - the GitHub Release is marked immutable;
 - the changelog and published package behavior agree.
 
