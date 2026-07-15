@@ -45,6 +45,7 @@ npm provenance. The workflow does not need `--provenance` and does not use
 | Setting | Value |
 | --- | --- |
 | npm package | `fastify-observability` |
+| Package registry | `https://registry.npmjs.org/` from `package.json#publishConfig.registry` |
 | GitHub repository | `janisto/fastify-observability` |
 | Package repository URL | `git+https://github.com/janisto/fastify-observability.git` |
 | Workflow | `.github/workflows/release.yml` |
@@ -79,7 +80,7 @@ staged-publishing command:
 2. installs the package's pinned pnpm 11.13.0 and the latest Node 24 release;
 3. verifies that the tag matches `package.json.version` and that the release
    commit belongs to `main`;
-4. configures the public npm registry with `actions/setup-node`;
+4. uses the public npm registry declared in `package.json#publishConfig`;
 5. installs dependencies from the frozen pnpm lockfile;
 6. runs `pnpm qa`, including build and tests;
 7. creates the npm tarball, verifies its exact contents, installs it with the
@@ -103,6 +104,12 @@ pnpm added native staged publishing in 11.3.0. This repository pins pnpm
 that exact version. The workflow never depends on the npm CLI bundled with the
 selected Node release. See the
 [pnpm stage documentation](https://pnpm.io/cli/stage).
+
+The workflow intentionally does not pass `registry-url` to
+`actions/setup-node`. That input writes an npm configuration containing a
+`${NODE_AUTH_TOKEN}` placeholder for token-based authentication. Native pnpm
+OIDC staging does not need that placeholder; `package.json#publishConfig`
+selects the public npm registry instead.
 
 ## Maintainer release guide
 

@@ -53,4 +53,20 @@ describe("workflow policy", () => {
     expect(release).not.toContain("npm install --global");
     expect(release.split("\n").some((line) => line.trimStart().startsWith("npm stage publish"))).toBe(false);
   });
+
+  it("stages through OIDC without generating npm token placeholders", () => {
+    const release = readFileSync(new URL("release.yml", workflows), "utf8");
+    const manifest = JSON.parse(readFileSync(new URL("../../package.json", workflows), "utf8")) as {
+      publishConfig?: { access?: string; registry?: string };
+    };
+
+    expect(release).toContain("id-token: write");
+    expect(release).toContain("pnpm stage publish artifacts/*.tgz --ignore-scripts --no-git-checks");
+    expect(release).not.toMatch(/^\s*registry-url:/m);
+    expect(release).not.toMatch(/\b(?:NODE_AUTH_TOKEN|NPM_TOKEN)\b/);
+    expect(manifest.publishConfig).toEqual({
+      access: "public",
+      registry: "https://registry.npmjs.org/",
+    });
+  });
 });
