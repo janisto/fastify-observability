@@ -1,5 +1,10 @@
 # fastify-observability
 
+[![npm version](https://img.shields.io/npm/v/fastify-observability.svg?style=flat&logo=npm)](https://www.npmjs.com/package/fastify-observability)
+[![CI](https://img.shields.io/github/actions/workflow/status/janisto/fastify-observability/ci.yml.svg?branch=main&style=flat&logo=github&label=CI)](https://github.com/janisto/fastify-observability/actions/workflows/ci.yml)
+[![Node.js](https://img.shields.io/node/v/fastify-observability.svg?style=flat&logo=nodedotjs)](#requirements-and-installation)
+[![License](https://img.shields.io/npm/l/fastify-observability.svg?style=flat)](LICENSE)
+
 Opinionated Fastify 5 request logging: validated request IDs, strict W3C trace
 correlation, request-scoped Pino fields, and exactly one structured terminal
 access record.
