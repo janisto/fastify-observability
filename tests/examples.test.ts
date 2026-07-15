@@ -141,4 +141,18 @@ describe("examples", () => {
       await app.close();
     }
   });
+
+  it("adds the error without mutating caller-owned wrapper fields", () => {
+    const write = vi.fn();
+    const logger = { error: write } as unknown as FastifyBaseLogger;
+    const cause = new Error("boom");
+    const fields = { component: "worker", err: "caller value" };
+
+    applog.error(logger, "worker failed", cause, fields);
+
+    expect(fields).toEqual({ component: "worker", err: "caller value" });
+    expect(write).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledWith({ err: cause, component: "worker" }, "worker failed");
+    expect(write.mock.calls[0]?.[0]).not.toBe(fields);
+  });
 });

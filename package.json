@@ -59,6 +59,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
+    "package:check": "node tests/package-smoke.mjs",
     "qa": "pnpm check && pnpm typecheck && pnpm test:coverage && pnpm build"
   },
   "dependencies": {

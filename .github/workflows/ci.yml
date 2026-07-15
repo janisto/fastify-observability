@@ -81,4 +81,4 @@ jobs:
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: pnpm pack --dry-run
+      - run: pnpm package:check

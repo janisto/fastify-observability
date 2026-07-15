@@ -50,10 +50,10 @@ audit:
 build: clean-dist
     pnpm build
 
-# Run the complete gate and inspect the files npm would publish.
+# Run the complete gate, inspect the npm artifact, and smoke-test it in an isolated consumer.
 [group('package')]
 package-check: qa
-    pnpm pack --dry-run
+    pnpm package:check
 
 # Install dependencies exactly as locked.
 [group('lifecycle')]

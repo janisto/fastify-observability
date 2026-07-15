@@ -8,6 +8,8 @@ The package creates the Pino logger used by Fastify. It does not initialize
 OpenTelemetry or a cloud SDK, create spans, or ship logs to a backend.
 Destinations and transports remain explicit application configuration.
 
+This is an independently maintained package, not official Fastify middleware.
+
 ## Requirements and installation
 
 - Node.js 24 or newer
@@ -319,7 +321,10 @@ scripts remain available directly for CI and environments without `just`.
 
 The complete gate covers formatting/lint, strict TypeScript, unit and real
 HTTP/1.1/HTTP/2 behavior, raw log-line assertions, 90% global coverage
-thresholds, and build output.
+thresholds, and build output. `just package-check` additionally creates the
+exact npm tarball, verifies its file set, installs it with the minimum supported
+Fastify version in an isolated consumer, typechecks its declarations, and runs
+a real request through the installed package.
 
 Releases use GitHub OIDC and npm trusted publishing without a stored npm write
 token. See [RELEASE.md](RELEASE.md).

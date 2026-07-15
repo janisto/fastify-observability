@@ -2,7 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.2.0 - Unreleased
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.2.0] - Unreleased
 
 ### Added
 
@@ -17,6 +20,8 @@ All notable changes to this project will be documented in this file.
   created Pino instances, custom logger adapters, and disabled logging are
   rejected.
 - Node 24, Fastify 5, ESM-only TypeScript package and pnpm release gates.
+- Isolated inspection, typechecking, and runtime smoke testing for the exact npm
+  tarball staged by the release workflow.
 
 ### Fixed
 
@@ -47,10 +52,14 @@ All notable changes to this project will be documented in this file.
   `CRITICAL` severities.
 - Preserve HTTP responses when Fastify remote-IP resolution fails, omitting
   only `remote_ip` from the access record.
+- Publish compiled JavaScript and declarations without incomplete source maps.
 
-## 0.1.0 - 2026-07-14
+## [0.1.0] - 2026-07-14
 
 ### Added
 
 - Bootstrap release establishing the package on npm with metadata only and no
   runtime API.
+
+[0.2.0]: https://github.com/janisto/fastify-observability/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/janisto/fastify-observability/releases/tag/v0.1.0

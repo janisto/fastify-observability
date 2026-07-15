@@ -28,6 +28,12 @@ describe("traceparent", () => {
     expect(parseTraceparent(`${maximum}x`)).toBeNull();
   });
 
+  it.each([2, 35, 52])("rejects corruption at required separator index %i", (separatorIndex) => {
+    const value = [...`00-${TRACE_ID}-${PARENT_ID}-01`];
+    value[separatorIndex] = "_";
+    expect(parseTraceparent(value.join(""))).toBeNull();
+  });
+
   it.each([
     ["a non-string value", null],
     ["a truncated value", "short"],
@@ -39,7 +45,6 @@ describe("traceparent", () => {
     ["uppercase trace flags", `00-${TRACE_ID}-${PARENT_ID}-0A`],
     ["an all-zero trace ID", `00-${"0".repeat(32)}-${PARENT_ID}-01`],
     ["an all-zero parent ID", `00-${TRACE_ID}-${"0".repeat(16)}-01`],
-    ["a misplaced separator", `00_${TRACE_ID}-${PARENT_ID}-01`],
     ["future data without its separator", `01-${TRACE_ID}-${PARENT_ID}-01x`],
     ["a control character in future data", `01-${TRACE_ID}-${PARENT_ID}-01-\u001f`],
   ])("rejects %s", (_name, value) => {

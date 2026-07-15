@@ -64,12 +64,18 @@ case-sensitive.
 The workflow deliberately stays close to npm's official trusted-publishing
 example:
 
-1. checks out the GitHub Release tag;
+1. checks out the explicit GitHub Release tag without persisting credentials;
 2. installs pnpm and the latest Node 24 release;
-3. configures the public npm registry with `actions/setup-node`;
-4. installs dependencies from the frozen pnpm lockfile;
-5. runs `pnpm qa`, including build and tests;
-6. stages the package using `npm stage publish` and OIDC.
+3. verifies that the tag matches `package.json.version` and that the release
+   commit belongs to `main`;
+4. configures the public npm registry with `actions/setup-node`;
+5. installs dependencies from the frozen pnpm lockfile;
+6. runs `pnpm qa`, including build and tests;
+7. creates the npm tarball, verifies its exact contents, installs it with the
+   minimum supported Fastify in an isolated consumer, typechecks the public
+   declarations, and exercises a real request through the installed package;
+8. records the inspected tarball's SHA-256 hash;
+9. stages that exact tarball using `npm stage publish` and OIDC.
 
 Normal GitHub Releases stage with npm dist-tag `latest`. GitHub Releases marked
 as prereleases stage with `next`; the GitHub prerelease checkbox must therefore
@@ -102,13 +108,15 @@ actionlint .github/workflows/ci.yml .github/workflows/release.yml
 git diff --check
 ```
 
-`just package-check` removes `dist/`, runs the complete `pnpm qa` gate, rebuilds
-the package, and prints the `pnpm pack --dry-run` file list. Cleaning `dist/`
-prevents files from deleted or renamed source modules from surviving a local
-rebuild. Review the printed package file list. It must contain
-the compiled package, declarations, README, changelog, license, and package
-metadata—never local plans, tests, coverage, environment files, npm
-configuration, or credentials.
+`just package-check` removes `dist/`, runs the complete `pnpm qa` gate, creates
+the exact npm tarball under `artifacts/`, and verifies its fixed file set.
+It then installs that tarball with Fastify 5.10.0 in a temporary consumer,
+typechecks the public declarations with strict TypeScript, and runs the public
+plugin through a real correlated GCP request and terminal access record.
+Cleaning `dist/` prevents files from deleted or renamed source modules from
+surviving a local rebuild. The artifact check rejects source maps and anything
+outside the compiled JavaScript, declarations, README, changelog, license, and
+package metadata.
 
 The release workflow intentionally continues to invoke pnpm directly. GitHub
 Actions starts from a fresh checkout, while the Justfile is the maintainer-facing
