@@ -78,6 +78,12 @@ staged-publishing command:
 8. records the inspected tarball's SHA-256 hash;
 9. stages that exact tarball using `pnpm stage publish` and OIDC.
 
+The final command uses `--no-git-checks` because the workflow intentionally
+checks out the immutable release tag rather than a named branch. This does not
+remove the release-source guard: earlier steps require the tag to match
+`package.json.version` and use `git merge-base --is-ancestor` to prove that the
+tagged commit belongs to `origin/main`.
+
 Normal GitHub Releases stage with npm dist-tag `latest`. GitHub Releases marked
 as prereleases stage with `next`; the GitHub prerelease checkbox must therefore
 match the package's SemVer version.

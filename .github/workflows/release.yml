@@ -55,4 +55,4 @@ jobs:
       - name: Stage package on npm
         env:
           NPM_DIST_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
-        run: pnpm stage publish artifacts/*.tgz --ignore-scripts --tag "$NPM_DIST_TAG"
+        run: pnpm stage publish artifacts/*.tgz --ignore-scripts --no-git-checks --tag "$NPM_DIST_TAG"

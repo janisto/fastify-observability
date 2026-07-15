@@ -48,6 +48,8 @@ describe("workflow policy", () => {
     expect(setupIndex, "release.yml must install the packageManager pnpm version").toBeGreaterThan(-1);
     expect(stageIndex, "release.yml must stage the package").toBeGreaterThan(-1);
     expect(setupIndex, "pnpm must be installed before staging").toBeLessThan(stageIndex);
+    expect(release).toContain("pnpm stage publish artifacts/*.tgz --ignore-scripts --no-git-checks");
+    expect(release).toContain("git merge-base --is-ancestor HEAD origin/main");
     expect(release).not.toContain("npm install --global");
     expect(release.split("\n").some((line) => line.trimStart().startsWith("npm stage publish"))).toBe(false);
   });
