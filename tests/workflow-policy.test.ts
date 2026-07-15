@@ -30,4 +30,25 @@ describe("workflow policy", () => {
 
     expect(externalActions).toBeGreaterThan(0);
   });
+
+  it("uses the pinned pnpm CLI for staged publishing", () => {
+    const release = readFileSync(new URL("release.yml", workflows), "utf8");
+    const manifest = JSON.parse(readFileSync(new URL("../../package.json", workflows), "utf8")) as {
+      packageManager?: string;
+    };
+    const pinned = /^pnpm@(\d+)\.(\d+)\.(\d+)$/.exec(manifest.packageManager ?? "");
+
+    expect(pinned, "packageManager must pin an exact pnpm version").not.toBeNull();
+    const major = Number(pinned?.[1]);
+    const minor = Number(pinned?.[2]);
+    expect(major > 11 || (major === 11 && minor >= 3), "pnpm stage requires pnpm >=11.3.0").toBe(true);
+
+    const setupIndex = release.indexOf("uses: pnpm/action-setup@");
+    const stageIndex = release.indexOf("pnpm stage publish");
+    expect(setupIndex, "release.yml must install the packageManager pnpm version").toBeGreaterThan(-1);
+    expect(stageIndex, "release.yml must stage the package").toBeGreaterThan(-1);
+    expect(setupIndex, "pnpm must be installed before staging").toBeLessThan(stageIndex);
+    expect(release).not.toContain("npm install --global");
+    expect(release.split("\n").some((line) => line.trimStart().startsWith("npm stage publish"))).toBe(false);
+  });
 });

@@ -29,12 +29,12 @@ The release boundary has five parts:
    to selected `v*` tags. The Environment contains no npm credential.
 3. **GitHub OIDC:** The job receives `id-token: write` permission and requests a
    short-lived identity for this workflow run.
-4. **npm trusted publisher:** npm accepts `npm stage publish` only when the
-   repository, workflow filename, and Environment match its configured trust
-   relationship.
+4. **npm trusted publisher:** npm accepts the staged-publish request from
+   `pnpm stage publish` only when the repository, workflow filename, and
+   Environment match its configured trust relationship.
 5. **Human approval:** Approval happens on npm, not GitHub. After the workflow
    succeeds, a maintainer opens npmjs.com's **Staged Packages** view or uses the
-   authenticated npm CLI, inspects the stage, and approves it with npm 2FA.
+   authenticated pnpm CLI, inspects the stage, and approves it with npm 2FA.
 
 Trusted publication from this public GitHub repository automatically creates
 npm provenance. The workflow does not need `--provenance` and does not use
@@ -49,7 +49,8 @@ npm provenance. The workflow does not need `--provenance` and does not use
 | Workflow | `.github/workflows/release.yml` |
 | GitHub Environment | `npm` |
 | Workflow trigger | GitHub Release `published` |
-| Trusted action | `npm stage publish` only |
+| Trusted-publisher permission | **Allow npm stage publish** only |
+| Workflow stage command | `pnpm stage publish` |
 | Release notes | GitHub-generated and maintainer-reviewed |
 | Stable GitHub Release label | `Latest` |
 | Stable npm dist-tag | `latest` |
@@ -61,11 +62,11 @@ case-sensitive.
 
 ## What the workflow does
 
-The workflow deliberately stays close to npm's official trusted-publishing
-example:
+The workflow uses npm's trusted-publishing protocol through pnpm's native
+staged-publishing command:
 
 1. checks out the explicit GitHub Release tag without persisting credentials;
-2. installs pnpm and the latest Node 24 release;
+2. installs the package's pinned pnpm 11.13.0 and the latest Node 24 release;
 3. verifies that the tag matches `package.json.version` and that the release
    commit belongs to `main`;
 4. configures the public npm registry with `actions/setup-node`;
@@ -75,14 +76,17 @@ example:
    minimum supported Fastify in an isolated consumer, typechecks the public
    declarations, and exercises a real request through the installed package;
 8. records the inspected tarball's SHA-256 hash;
-9. stages that exact tarball using `npm stage publish` and OIDC.
+9. stages that exact tarball using `pnpm stage publish` and OIDC.
 
 Normal GitHub Releases stage with npm dist-tag `latest`. GitHub Releases marked
 as prereleases stage with `next`; the GitHub prerelease checkbox must therefore
 match the package's SemVer version.
 
-The workflow does not update npm globally. The latest Node 24 release includes
-an npm version new enough for OIDC and staged publishing.
+pnpm added native staged publishing in 11.3.0. This repository pins pnpm
+11.13.0 through `package.json#packageManager`, and `pnpm/action-setup` installs
+that exact version. The workflow never depends on the npm CLI bundled with the
+selected Node release. See the
+[pnpm stage documentation](https://pnpm.io/cli/stage).
 
 ## Maintainer release guide
 
@@ -194,12 +198,12 @@ npm maintainer, open the **Staged Packages** view, and select the staged
 `fastify-observability` version. If no workflow has staged a version, there is
 nothing to approve.
 
-An authenticated maintainer can inspect the same stage with the npm CLI:
+An authenticated maintainer can inspect the same stage with the pnpm CLI:
 
 ```bash
-npm stage list fastify-observability
-npm stage view <stage-id>
-npm stage download <stage-id>
+pnpm stage list fastify-observability
+pnpm stage view <stage-id>
+pnpm stage download <stage-id>
 ```
 
 Check the package name, version, dist-tag, file list, integrity, repository,
@@ -210,13 +214,13 @@ GitHub Release.
 
 Approve only after the stage is exact. On npmjs.com, click **Approve** for the
 selected staged package and complete the interactive 2FA prompt. Alternatively,
-approve through the authenticated npm CLI:
+approve through the authenticated pnpm CLI:
 
 ```bash
-npm stage approve <stage-id>
+pnpm stage approve <stage-id>
 ```
 
-Use the interactive npm or website prompt for 2FA. Never place an OTP, recovery
+Use the interactive pnpm or website prompt for 2FA. Never place an OTP, recovery
 code, password, or session token in a command, file, issue, release note, CI
 variable, or log.
 
@@ -229,7 +233,7 @@ Set the released version locally and inspect public metadata:
 
 ```bash
 VERSION=X.Y.Z
-npm view "fastify-observability@$VERSION" \
+pnpm view "fastify-observability@$VERSION" \
   name version dist-tags repository engines peerDependencies dependencies \
   maintainers dist --json
 ```
@@ -255,8 +259,8 @@ Finally, verify:
 - the GitHub Release is marked immutable;
 - the changelog and published package behavior agree.
 
-`npm audit signatures` should run in a separate temporary npm-managed project.
-Do not create or commit `package-lock.json` in this pnpm repository.
+Run `pnpm audit signatures` in a separate temporary pnpm-managed project so
+public-release verification cannot alter this repository's lockfile.
 
 ## Failure and recovery
 
@@ -285,7 +289,7 @@ OIDC staging architecture.
 
 - [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)
 - [npm staged publishing](https://docs.npmjs.com/staged-publishing/)
-- [`npm stage` CLI](https://docs.npmjs.com/cli/v11/commands/npm-stage/)
+- [`pnpm stage` CLI](https://pnpm.io/cli/stage)
 - [npm provenance](https://docs.npmjs.com/generating-provenance-statements/)
 - [`actions/setup-node` trusted-publisher guide](https://github.com/actions/setup-node/blob/main/docs/advanced-usage.md#publishing-to-npm-with-trusted-publisher-oidc)
 - [GitHub OIDC](https://docs.github.com/en/actions/reference/security/oidc)

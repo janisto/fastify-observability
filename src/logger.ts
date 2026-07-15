@@ -136,6 +136,19 @@ function validateOptions(options: ObservabilityLoggerOptions): CanonicalLoggerPr
   return Object.freeze({ preset });
 }
 
+function validateTransport(profile: CanonicalLoggerProfile, transport: LoggerOptions["transport"]): void {
+  if (profile.preset !== "gcp" || transport === undefined) {
+    return;
+  }
+  // Pino's multi-target mode routes on its numeric `level` field, while the
+  // canonical GCP envelope intentionally replaces that field with `severity`.
+  // Reject this package-level incompatibility before leaking a Pino-internal
+  // startup error. Single targets and pipelines remain supported.
+  if (transport !== null && typeof transport === "object" && Array.isArray(Reflect.get(transport, "targets"))) {
+    throw new TypeError("logger transport.targets is incompatible with the gcp preset; use transport.target instead");
+  }
+}
+
 function validateBaseBindings(bindings: Readonly<Record<string, unknown>> | null | undefined): void {
   if (bindings === null || bindings === undefined) {
     return;
@@ -360,6 +373,7 @@ export function createCanonicalChild(logger: Logger, bindings: Bindings): Logger
 
 export function createObservabilityLogger(options: ObservabilityLoggerOptions = {}): ObservabilityLogger {
   const profile = validateOptions(options);
+  validateTransport(profile, options.transport);
   validateBaseBindings(options.base);
   validateRedaction(options.redact);
   validateSerializers(options.serializers);

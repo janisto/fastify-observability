@@ -148,6 +148,76 @@ describe("canonical Pino logger", () => {
     }
   });
 
+  it("rejects GCP transport.targets with a package-owned configuration error", () => {
+    let thrown: unknown;
+
+    try {
+      createObservabilityLogger({
+        preset: "gcp",
+        transport: {
+          targets: [
+            { target: "pino/file", options: { destination: 1 } },
+            { target: "pino/file", options: { destination: 2 } },
+          ],
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect(thrown).toHaveProperty(
+      "message",
+      "logger transport.targets is incompatible with the gcp preset; use transport.target instead",
+    );
+  });
+
+  it("keeps transport.targets available to presets without GCP level formatting", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "fastify-observability-"));
+    const firstDestination = join(directory, "first.log");
+    const secondDestination = join(directory, "second.log");
+    const logger = createObservabilityLogger({
+      transport: {
+        targets: [
+          { target: "pino/file", options: { destination: firstDestination } },
+          { target: "pino/file", options: { destination: secondDestination } },
+        ],
+      },
+    });
+    const transport = Reflect.get(logger, pino.symbols.streamSym) as EventEmitter & {
+      ready: boolean;
+      end(): void;
+    };
+    let finished = false;
+    let completion: Promise<unknown[]> | undefined;
+    try {
+      if (!transport.ready) {
+        await once(transport, "ready");
+      }
+      logger.info("transported twice");
+      completion = once(transport, "finish");
+      transport.end();
+      await completion;
+      finished = true;
+
+      for (const destination of [firstDestination, secondDestination]) {
+        const line = readFileSync(destination, "utf8").trim();
+        expect(JSON.parse(line)).toMatchObject({ level: 30, message: "transported twice" });
+        expect(topLevelKeyOccurrences(line, "level")).toBe(1);
+        expect(topLevelKeyOccurrences(line, "severity")).toBe(0);
+      }
+    } finally {
+      if (!finished) {
+        if (completion === undefined) {
+          completion = once(transport, "finish");
+          transport.end();
+        }
+        await completion.catch(() => undefined);
+      }
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     "time",
     "timestamp",

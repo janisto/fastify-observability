@@ -98,7 +98,7 @@ record contract.
 | `base` | Pino default | Stable application bindings such as service metadata |
 | `redact` | None | Explicit root Pino redaction; no fields are redacted by default |
 | `serializers` | Pino defaults | Serializers for application-owned fields; they must never throw |
-| `transport` | None | Pino transport configuration |
+| `transport` | None | Pino transport configuration; `gcp` excludes `transport.targets` |
 | `destination` | Pino stdout | Explicit Pino destination stream; mutually exclusive with `transport` |
 
 The factory owns `messageKey`, level formatting, `onChild`, child binding
@@ -106,6 +106,15 @@ guards, and the absence of `mixin`, `nestedKey`, log formatters, and log-method
 hooks. The message key is always `message`. The GCP preset maps Pino levels to
 Cloud Logging severities (`warn` becomes `WARNING`; `fatal` becomes
 `CRITICAL`); the other presets retain Pino's numeric `level`.
+
+Pino multi-target mode (`transport.targets`) routes records using the numeric
+`level` field. The `gcp` preset intentionally replaces that field with
+`severity`, so it rejects `transport.targets` at logger creation instead of
+leaking Pino's internal configuration error. Use `transport.target` for one
+destination or one custom target that performs its own fan-out. The `default`,
+`aws`, and `azure` presets retain the numeric level and support
+`transport.targets`. This follows Pino 10's
+[level-formatter boundary](https://github.com/pinojs/pino/blob/v10.3.1/docs/api.md#formatters-object).
 
 The default is full-fidelity logging. No redaction is installed automatically,
 and observed errors retain Pino's standard type, message, stack, cause text, and
@@ -368,8 +377,8 @@ exact npm tarball, verifies its file set, installs it with the minimum supported
 Fastify version in an isolated consumer, typechecks its declarations, and runs
 a real request through the installed package.
 
-Releases use GitHub OIDC and npm trusted publishing without a stored npm write
-token. See
+Releases use `pnpm stage publish`, GitHub OIDC, and npm trusted publishing
+without a stored npm write token. See
 [RELEASE.md](https://github.com/janisto/fastify-observability/blob/main/RELEASE.md).
 
 ## References
