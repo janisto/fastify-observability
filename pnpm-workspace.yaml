@@ -1,0 +1,13 @@
+packages:
+  - .
+
+engineStrict: true
+strictDepBuilds: true
+minimumReleaseAge: 1440
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+trustLockfile: false
+blockExoticSubdeps: true
+
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,58 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Stage package on npm
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # Required for npm trusted publishing; no registry token is used.
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6.0.9
+        with:
+          run_install: false
+      - name: Install Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "24"
+          check-latest: true
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org/
+      - name: Verify tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          EXPECTED_TAG="v$(node -p "require('./package.json').version")"
+          if [ "$RELEASE_TAG" != "$EXPECTED_TAG" ]; then
+            echo "release tag $RELEASE_TAG must equal $EXPECTED_TAG" >&2
+            exit 1
+          fi
+      - name: Verify release commit belongs to main
+        run: git merge-base --is-ancestor HEAD origin/main
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm qa
+      - run: pnpm package:check
+      - name: Record package hash
+        run: sha256sum artifacts/*.tgz
+      - name: Stage package on npm
+        env:
+          NPM_DIST_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
+        run: pnpm stage publish artifacts/*.tgz --ignore-scripts --no-git-checks --tag "$NPM_DIST_TAG"

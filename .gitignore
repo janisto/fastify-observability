@@ -1,14 +1,28 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-
-# other
-artifacts/
-coverage/
-dist/
+# Dependencies and package-manager cache
 node_modules/
+.pnpm-store/
+
+# Build, test, and package artifacts
+dist/
+coverage/
+artifacts/
+*.tgz
+*.tsbuildinfo
+
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+pnpm-debug.log*
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+
+# Local implementation and release plans are intentionally not committed.
 plans/

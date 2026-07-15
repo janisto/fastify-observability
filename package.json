@@ -1,24 +1,44 @@
 {
   "name": "fastify-observability",
   "version": "0.1.0",
-  "description": "Fastify request IDs, W3C trace correlation, request-scoped Pino fields, and structured access logs.",
+  "description": "Fastify middleware for request IDs, trace correlation, and structured access logs.",
   "keywords": [
     "fastify",
+    "fastify-plugin",
     "observability",
+    "logging",
+    "access-logs",
     "request-id",
     "structured-logging",
+    "json-logging",
+    "cloud-logging",
     "pino",
-    "traceparent"
+    "traceparent",
+    "w3c-trace-context",
+    "nodejs",
+    "typescript"
   ],
   "author": "Jani Mikkonen",
   "license": "MIT",
   "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
   "engines": {
-    "node": "24"
+    "node": ">=24"
   },
-  "peerDependencies": {
-    "fastify": "^5.10.0"
-  },
+  "packageManager": "pnpm@11.13.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/janisto/fastify-observability.git"
@@ -30,5 +50,31 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "package:check": "node tests/package-smoke.mjs",
+    "qa": "pnpm check && pnpm typecheck && pnpm test:coverage && pnpm build"
+  },
+  "dependencies": {
+    "fastify-plugin": "^6.0.0",
+    "pino": "^10.3.1"
+  },
+  "peerDependencies": {
+    "fastify": "^5.10.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.3",
+    "@types/node": "24.13.3",
+    "@vitest/coverage-v8": "4.1.10",
+    "fastify": "5.10.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
   }
 }
