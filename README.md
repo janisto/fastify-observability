@@ -223,6 +223,13 @@ pnpm qa
 The complete gate covers formatting/lint, strict TypeScript, unit and real
 HTTP/1.1/HTTP/2 behavior, 90% global coverage thresholds, and build output.
 
+## Release integrity
+
+Releases use GitHub OIDC and npm trusted publishing without a stored npm write
+token. Packages are staged first and require human inspection plus 2FA approval
+before becoming public. See the public
+[release architecture and maintainer guide](https://github.com/janisto/fastify-observability/blob/main/RELEASE.md).
+
 ## License
 
 MIT
