@@ -378,8 +378,10 @@ traffic is preserved, and the ambiguous package access record is omitted.
 ## Compatibility and development
 
 The package is ESM-only, supports Node 24 or newer and Fastify `^5.10.0`, and
-follows semantic versioning. During `0.x`, option behavior and structured-field
-changes are called out in [CHANGELOG.md](CHANGELOG.md). Deep imports are
+follows semantic versioning. Starting with `1.0.0`, exported APIs, option
+behavior, structured fields, defaults, and supported runtime versions are
+compatibility contracts. Breaking changes require a new major release and
+migration guidance in [CHANGELOG.md](CHANGELOG.md). Deep imports are
 unsupported.
 
 Development requires [pnpm 11.13.0](https://pnpm.io/installation), pinned by
