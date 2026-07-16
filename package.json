@@ -71,7 +71,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.3",
-    "@types/node": "24.13.3",
+    "@types/node": "25.9.5",
     "@vitest/coverage-v8": "4.1.10",
     "fastify": "5.10.0",
     "typescript": "7.0.2",
