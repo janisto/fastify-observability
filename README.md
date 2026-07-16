@@ -9,9 +9,34 @@ Opinionated Fastify 5 request logging: validated request IDs, strict W3C trace
 correlation, request-scoped Pino fields, and exactly one structured terminal
 access record.
 
-The package creates the Pino logger used by Fastify. It does not initialize
-OpenTelemetry or a cloud SDK, create spans, or ship logs to a backend.
-Destinations and transports remain explicit application configuration.
+## Why this package exists
+
+Managed platforms such as Cloud Run already collect container output.
+Applications should only need to write structured JSON to standard output
+(`stdout`); the platform can handle ingestion and delivery.
+
+Compared with sending logs through an in-process cloud logging client, this
+reduces container CPU, memory, and network use by removing logging API calls,
+authentication, buffering, batching, and retry work from the application. Under
+sustained logging load, that reduction can provide a noticeable performance
+improvement. It also avoids the dependency and maintenance cost of a cloud
+logging SDK, including its configuration, credentials, and upgrades.
+
+This package turns that simple pipeline into useful production observability.
+It provides validated request IDs, strict W3C trace correlation,
+request-scoped fields, and one structured terminal access record. Application
+and access logs share the same correlation metadata, making all records from a
+request easier to find, filter, and understand.
+
+Cloud presets map the same logging contract to provider-oriented fields without
+coupling application code to a cloud logging SDK. The package focuses on
+structured logging and request correlation: it does not create spans, configure
+OpenTelemetry, or ship logs to a backend.
+
+## Package scope
+
+The package creates the Pino logger used by Fastify. Destinations and transports
+remain explicit application configuration.
 
 This is an independently maintained package, not official Fastify middleware.
 
@@ -385,6 +410,15 @@ a real request through the installed package.
 Releases use `pnpm stage publish`, GitHub OIDC, and npm trusted publishing
 without a stored npm write token. See
 [RELEASE.md](https://github.com/janisto/fastify-observability/blob/main/RELEASE.md).
+
+## Planned mutation testing
+
+Mutation testing with
+[StrykerJS](https://github.com/stryker-mutator/stryker-js) is planned once
+upstream [TypeScript 7 support](https://github.com/stryker-mutator/stryker-js/pull/6099)
+is merged and included in a release. Until then, Stryker is intentionally not
+installed and no `just mutation` recipe is provided. Add the dependencies,
+configuration, and Justfile recipe together when support is available.
 
 ## References
 
