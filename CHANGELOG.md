@@ -7,6 +7,21 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-16
+
+### Added
+
+- Added npm version, CI, Node.js support, and license status badges to the
+  README.
+
+### Changed
+
+- Promoted the existing documented logger, plugin, request-context, structured
+  field, default, and runtime-support contracts to a stable 1.0 public API.
+  This release requires no migration from `0.2.1`.
+- Expanded the README with package motivation, explicit scope boundaries, and
+  the planned mutation-testing status.
+
 ## [0.2.1] - 2026-07-15
 
 ### Fixed
@@ -41,7 +56,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Bootstrap release establishing the package on npm with metadata only and no
   runtime API.
 
-[Unreleased]: https://github.com/janisto/fastify-observability/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/janisto/fastify-observability/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/janisto/fastify-observability/compare/v0.2.1...v1.0.0
 [0.2.1]: https://github.com/janisto/fastify-observability/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/janisto/fastify-observability/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/janisto/fastify-observability/releases/tag/v0.1.0

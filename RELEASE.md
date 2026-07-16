@@ -309,7 +309,8 @@ public-release verification cannot alter this repository's lockfile.
 `0.1.0` was a one-time metadata-only bootstrap used to create the npm package
 record. It was published interactively and therefore has no GitHub Actions
 provenance. `0.2.0` was the first implementation release published through
-this OIDC staging architecture.
+this OIDC staging architecture. `1.0.0` is the first stable release of the
+documented public compatibility contract.
 
 ## Official documentation
 
