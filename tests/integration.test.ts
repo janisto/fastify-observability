@@ -21,11 +21,85 @@ const TRACEPARENT = `00-${TRACE_ID}-${PARENT_ID}-01`;
 
 const apps: Array<{ close(): Promise<unknown> }> = [];
 
+async function gcpHealthRequest(level: "debug" | "info") {
+  const { app, lines, records } = await buildTestApp({}, { preset: "gcp", level });
+  apps.push(app);
+  app.get("/health", (request) => {
+    request.log.info(
+      { service_name: "example-service", service_version: "2026.07.17", health_status: "ok" },
+      "health check",
+    );
+    request.log.debug({ dependency: "database", dependency_status: "ok", check_duration_ms: 3 }, "dependency check");
+    return "ok";
+  });
+  const response = await app.inject({ url: "/health", headers: { "x-request-id": "health-example" } });
+  return { lines, records, response };
+}
+
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
 describe("Fastify integration", () => {
+  it("writes GCP application info, application debug, and one terminal health record", async () => {
+    const { lines, records, response } = await gcpHealthRequest("debug");
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("ok");
+    expect(lines).toHaveLength(3);
+    expect(records).toHaveLength(3);
+    expect(records[0]).toMatchObject({
+      severity: "INFO",
+      message: "health check",
+      service_name: "example-service",
+      service_version: "2026.07.17",
+      health_status: "ok",
+    });
+    expect(records[1]).toMatchObject({
+      severity: "DEBUG",
+      message: "dependency check",
+      dependency: "database",
+      dependency_status: "ok",
+      check_duration_ms: 3,
+    });
+    for (const record of records) {
+      expect(record).toMatchObject({ request_id: "health-example", correlation_id: "health-example" });
+    }
+    expect(records[2]).toMatchObject({
+      severity: "INFO",
+      message: "request completed",
+      method: "GET",
+      path: "/health",
+      path_template: "/health",
+      status: 200,
+      httpRequest: { requestMethod: "GET", requestUrl: "/health", status: 200 },
+    });
+    expect(records[2]?.["httpRequest"]).toMatchObject({ latency: expect.any(String) });
+    for (const applicationOnly of [
+      "service_name",
+      "service_version",
+      "health_status",
+      "dependency",
+      "dependency_status",
+      "check_duration_ms",
+    ]) {
+      expect(records[2]?.[applicationOnly]).toBeUndefined();
+    }
+    expect(accessRecords(records)).toHaveLength(1);
+  });
+
+  it("filters health debug details at the GCP info threshold", async () => {
+    const { lines, records, response } = await gcpHealthRequest("info");
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("ok");
+    expect(lines).toHaveLength(2);
+    expect(records.map((record) => record.message)).toEqual(["health check", "request completed"]);
+    expect(records.every((record) => record["request_id"] === "health-example")).toBe(true);
+    expect(lines.join("\n")).not.toContain("dependency check");
+    expect(lines.join("\n")).not.toContain("check_duration_ms");
+  });
+
   it("shares validated request and trace context across handler, response, and access log", async () => {
     const { app, records } = await buildTestApp({}, { preset: "gcp" });
     apps.push(app);

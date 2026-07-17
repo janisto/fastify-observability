@@ -131,13 +131,13 @@ and documentation must be reviewed together.
 just install
 just package-check
 just audit
-actionlint .github/workflows/ci.yml .github/workflows/release.yml
 git diff --check
 ```
 
-`just package-check` removes `dist/`, runs the complete `pnpm qa` gate, creates
-the exact npm tarball under `artifacts/`, verifies its fixed file set, and checks
-that every relative README link resolves to a file in that tarball.
+`just package-check` removes `dist/`, runs the complete `pnpm qa` gate plus
+actionlint and [zizmor](https://docs.zizmor.sh/), creates the exact npm tarball
+under `artifacts/`, verifies its fixed file set, and checks that every relative
+README link resolves to a file in that tarball.
 It then installs that tarball with Fastify 5.10.0 in a temporary consumer,
 typechecks the public declarations with strict TypeScript, and runs the public
 plugin through a real correlated GCP request and terminal access record.

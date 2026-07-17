@@ -1,9 +1,8 @@
 # fastify-observability
 
-[![npm version](https://img.shields.io/npm/v/fastify-observability.svg?style=flat&logo=npm)](https://www.npmjs.com/package/fastify-observability)
-[![CI](https://img.shields.io/github/actions/workflow/status/janisto/fastify-observability/ci.yml.svg?branch=main&style=flat&logo=github&label=CI)](https://github.com/janisto/fastify-observability/actions/workflows/ci.yml)
-[![Node.js](https://img.shields.io/node/v/fastify-observability.svg?style=flat&logo=nodedotjs)](#requirements-and-installation)
-[![License](https://img.shields.io/npm/l/fastify-observability.svg?style=flat)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/fastify-observability.svg)](https://www.npmjs.com/package/fastify-observability)
+[![Node.js](https://img.shields.io/node/v/fastify-observability.svg)](#requirements-and-installation)
+[![CI](https://img.shields.io/github/actions/workflow/status/janisto/fastify-observability/ci.yml?branch=main&label=CI)](https://github.com/janisto/fastify-observability/actions/workflows/ci.yml)
 [![Socket Badge](https://badge.socket.dev/npm/package/fastify-observability)](https://socket.dev/npm/package/fastify-observability)
 
 Opinionated Fastify 5 request logging: validated request IDs, strict W3C trace
@@ -387,7 +386,12 @@ unsupported.
 
 Development requires [pnpm 11.13.0](https://pnpm.io/installation), pinned by
 the `packageManager` field, and [just](https://github.com/casey/just). With both
-installed, use the repository's grouped commands:
+installed, install the workflow linters on macOS and use the repository's
+grouped commands:
+
+```bash
+brew install actionlint zizmor
+```
 
 ```bash
 just install
@@ -405,7 +409,8 @@ scripts remain available directly for CI and environments without `just`.
 
 The complete gate covers formatting/lint, strict TypeScript, unit and real
 HTTP/1.1/HTTP/2 behavior, raw log-line assertions, 90% global coverage
-thresholds, and build output. `just package-check` additionally creates the
+thresholds, build output, [actionlint](https://github.com/rhysd/actionlint), and
+[zizmor](https://docs.zizmor.sh/). `just package-check` additionally creates the
 exact npm tarball, verifies its file set, installs it with the minimum supported
 Fastify version in an isolated consumer, typechecks its declarations, and runs
 a real request through the installed package.

@@ -27,6 +27,36 @@ plugin derives it from that logger. In the GCP example,
 `logging.googleapis.com/trace` intentionally remains the bare trace ID from the
 validated W3C `traceparent`; no project resource prefix is added.
 
+## GCP health-route logging
+
+Use the request logger for application records that should share the package's
+request and trace correlation. For example, a health route can emit service and
+dependency details alongside the package's terminal request record:
+
+```ts
+app.get("/health", (request) => {
+  request.log.info(
+    { service_name: "example-service", service_version: "2026.07.17", health_status: "ok" },
+    "health check",
+  );
+  request.log.debug(
+    { dependency: "database", dependency_status: "ok", check_duration_ms: 3 },
+    "dependency check",
+  );
+  return "ok";
+});
+```
+
+With the GCP preset and logger level `debug`, one request writes three JSON
+objects to the configured destination: the application `INFO` record, the
+application `DEBUG` record, and exactly one terminal request record. All three
+share `request_id` and `correlation_id`. At logger level `info`, Pino filters the
+dependency record while retaining the health and terminal records.
+
+The integration suite exercises this route through Fastify and parses the
+destination bytes as newline-delimited JSON. Google Cloud ingestion and trace
+linking are deliberately outside that test boundary.
+
 The optional local wrapper contains only small application helpers; it does not
 duplicate Fastify or plugin setup. Pass the enriched `request.log` explicitly
 to preserve request and trace bindings without global state or ambient request

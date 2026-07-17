@@ -37,7 +37,13 @@ test-watch *args:
 
 # Run the complete non-mutating repository gate from a clean build directory.
 [group('qa')]
-qa: clean-dist
+workflow-check:
+    actionlint
+    zizmor --offline .
+
+# Run the complete non-mutating repository gate from a clean build directory.
+[group('qa')]
+qa: clean-dist workflow-check
     pnpm qa
 
 # Audit production dependencies.
