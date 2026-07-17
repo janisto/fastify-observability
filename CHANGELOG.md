@@ -7,6 +7,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Added a tested GCP health-route use case showing developer `INFO` and `DEBUG`
+  records alongside one terminal request record on the logger's stdout-style
+  destination.
+
 ## [1.0.0] - 2026-07-16
 
 ### Added

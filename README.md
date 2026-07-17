@@ -387,7 +387,12 @@ unsupported.
 
 Development requires [pnpm 11.13.0](https://pnpm.io/installation), pinned by
 the `packageManager` field, and [just](https://github.com/casey/just). With both
-installed, use the repository's grouped commands:
+installed, install the workflow linters on macOS and use the repository's
+grouped commands:
+
+```bash
+brew install actionlint zizmor
+```
 
 ```bash
 just install
@@ -405,7 +410,8 @@ scripts remain available directly for CI and environments without `just`.
 
 The complete gate covers formatting/lint, strict TypeScript, unit and real
 HTTP/1.1/HTTP/2 behavior, raw log-line assertions, 90% global coverage
-thresholds, and build output. `just package-check` additionally creates the
+thresholds, build output, [actionlint](https://github.com/rhysd/actionlint), and
+[zizmor](https://docs.zizmor.sh/). `just package-check` additionally creates the
 exact npm tarball, verifies its file set, installs it with the minimum supported
 Fastify version in an isolated consumer, typechecks its declarations, and runs
 a real request through the installed package.
