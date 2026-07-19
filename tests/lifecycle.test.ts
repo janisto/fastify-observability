@@ -330,7 +330,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability, { capturePath: true });
+    await app.register(fastifyObservability, { capturePath: true, captureError: true });
     app.get("/broken", (_request, reply) => {
       let started = false;
       const body = new Readable({

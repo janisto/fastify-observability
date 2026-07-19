@@ -3,6 +3,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import {
   type AccessState,
+  canonicalPeerIp,
   canonicalRouteTemplate,
   cleanupListeners,
   emitAccessRecord,
@@ -27,14 +28,26 @@ describe("access helpers", () => {
   });
 
   it.each([
-    [undefined, "/"],
-    ["", "/"],
-    ["*", "*"],
+    [undefined, undefined],
+    ["", undefined],
+    ["*", undefined],
     ["/items/a%3Fb?secret=yes", "/items/a%3Fb"],
-    ["https://attacker.example/path?secret=yes", "/path"],
-    ["http://[invalid", "/"],
-  ])("derives a private path from %s", (input, expected) => {
+    ["/items/bad%2", undefined],
+    ["/items#fragment", undefined],
+    ["https://attacker.example/path?secret=yes", undefined],
+    ["http://[invalid", undefined],
+  ])("uses only a valid origin-form path from %s", (input, expected) => {
     expect(requestPath(input)).toBe(expected);
+  });
+
+  it.each([
+    ["192.0.2.10", "192.0.2.10"],
+    ["2001:0db8:0:0:0:0:0:1", "2001:db8::1"],
+    ["fe80::1%eth0", undefined],
+    ["internal.example", undefined],
+    ["", undefined],
+  ])("canonicalizes only a direct IP literal %s", (input, expected) => {
+    expect(canonicalPeerIp(input)).toBe(expected);
   });
 
   it("observes stream errors and removes listeners", () => {
@@ -51,6 +64,7 @@ describe("access helpers", () => {
     const error = new Error("stream failed");
     stream.emit("error", error);
     expect(state.error).toBe(error);
+    expect(state.streamFailed).toBe(true);
     cleanupListeners(state);
     expect(stream.listenerCount("error")).toBe(0);
     expect(raw.listenerCount("close")).toBe(0);
@@ -101,6 +115,8 @@ describe("access helpers", () => {
 
     expect(requestUserAgent(withHeaders(["User-Agent", "catalog-client/1.0"]))).toBe("catalog-client/1.0");
     expect(requestUserAgent(withHeaders(["User-Agent", "first", "user-agent", "second"]))).toBeUndefined();
+    expect(requestUserAgent(withHeaders(["User-Agent", ""]))).toBeUndefined();
+    expect(requestUserAgent(withHeaders(["User-Agent", "agent/1.0\nforged"]))).toBeUndefined();
     expect(requestUserAgent(withHeaders([]))).toBeUndefined();
   });
 
@@ -148,10 +164,10 @@ describe("access helpers", () => {
       traceHeader: "traceparent",
       tracestateHeader: "tracestate",
       traceContextLevel: 1,
-      message: "request completed",
       capturePath: true,
       capturePeerIp: true,
       captureUserAgent: true,
+      captureError: false,
       clock: () => performance.now(),
     });
     const logger = { ...logs, isLevelEnabled } as unknown as AccessState["logger"];
@@ -167,6 +183,7 @@ describe("access helpers", () => {
         loggerBindings: {},
         peerIp: "127.0.0.1",
         userAgent: undefined,
+        streamFailed: false,
         emitted: false,
         suppressAccess: false,
         ...overrides,
@@ -196,7 +213,11 @@ describe("access helpers", () => {
     expect(timeout.log.mock.calls[0]?.[0]).toMatchObject({ terminal_reason: "timeout" });
 
     const streamError = new Error("broken");
-    const stream = accessState({ error: streamError });
+    const base = accessState();
+    const stream = accessState({
+      error: streamError,
+      options: Object.freeze({ ...base.state.options, captureError: true }),
+    });
     emitAccessRecord(stream.state, "body_error", 200);
     expect(stream.logs.error).toHaveBeenCalledOnce();
     expect(stream.logs.warn).not.toHaveBeenCalled();
@@ -340,6 +361,16 @@ describe("access helpers", () => {
       },
     });
     Reflect.set(sample.state.request.routeOptions, "schema", schema);
+
+    emitAccessRecord(sample.state, "response", 200);
+
+    expect(sample.logs.info).toHaveBeenCalledOnce();
+    expect(sample.log.mock.calls[0]?.[0]).not.toHaveProperty("operation_id");
+  });
+
+  it("omits an operationId containing control characters", () => {
+    const sample = accessState();
+    Reflect.set(sample.state.request.routeOptions, "schema", { operationId: "get_item\nforged" });
 
     emitAccessRecord(sample.state, "response", 200);
 

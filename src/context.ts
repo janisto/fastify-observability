@@ -17,10 +17,10 @@ export interface NormalizedOptions {
   readonly traceHeader: string;
   readonly tracestateHeader: string;
   readonly traceContextLevel: TraceContextLevel;
-  readonly message: string;
   readonly capturePath: boolean;
   readonly capturePeerIp: boolean;
   readonly captureUserAgent: boolean;
+  readonly captureError: boolean;
   readonly clock: () => number;
   readonly levelForStatus?: LevelForStatus;
   readonly extraFields?: ExtraFields;
@@ -36,6 +36,7 @@ const OPTION_KEYS = new Set([
   "capturePath",
   "capturePeerIp",
   "captureUserAgent",
+  "captureError",
   "clock",
   "levelForStatus",
   "extraFields",
@@ -71,9 +72,8 @@ export function normalizeOptions(options: FastifyObservabilityOptions, preset: L
   if (responseHeader !== false && (responseHeader === traceHeader || responseHeader === tracestateHeader)) {
     throw new TypeError("responseHeader must not collide with trace headers");
   }
-  const message = options.message ?? "request completed";
-  if (typeof message !== "string" || message.trim().length === 0) {
-    throw new TypeError("message must be a non-empty string");
+  if (options.message !== undefined && options.message !== "request completed") {
+    throw new TypeError('message must be exactly "request completed"');
   }
   if (options.clock !== undefined && typeof options.clock !== "function") {
     throw new TypeError("clock must be a function");
@@ -91,10 +91,10 @@ export function normalizeOptions(options: FastifyObservabilityOptions, preset: L
     traceHeader,
     tracestateHeader,
     traceContextLevel: resolveTraceContextLevel(options.traceContextLevel),
-    message,
     capturePath: booleanOption("capturePath", options.capturePath),
     capturePeerIp: booleanOption("capturePeerIp", options.capturePeerIp),
     captureUserAgent: booleanOption("captureUserAgent", options.captureUserAgent),
+    captureError: booleanOption("captureError", options.captureError),
     clock: options.clock ?? (() => performance.now()),
   };
   if (options.levelForStatus !== undefined) {

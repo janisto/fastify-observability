@@ -31,10 +31,11 @@ export interface FastifyObservabilityOptions {
   traceHeader?: string;
   tracestateHeader?: string;
   traceContextLevel?: TraceContextLevel;
-  message?: string;
+  message?: "request completed";
   capturePath?: boolean;
   capturePeerIp?: boolean;
   captureUserAgent?: boolean;
+  captureError?: boolean;
   clock?: () => number;
   levelForStatus?: LevelForStatus;
   extraFields?: ExtraFields;

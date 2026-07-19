@@ -20,6 +20,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- Omit unavailable, malformed, and non-origin-form request paths; canonicalize
+  direct peer IP literals; and distinguish response-stream failures from
+  unrelated handler errors when classifying disconnects.
 - Disabled concrete path, direct peer IP, and User-Agent capture by default;
   renamed the opt-in portable peer field from `remote_ip` to `peer_ip`, and
   made the matching GCP request members conditional on those opt-ins.

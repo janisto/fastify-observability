@@ -152,10 +152,11 @@ destination or one custom target that performs its own fan-out. The `default`,
 `transport.targets`. This follows Pino 10's
 [level-formatter boundary](https://github.com/pinojs/pino/blob/v10.3.1/docs/api.md#formatters-object).
 
-No redaction is installed automatically, and observed errors retain Pino's
-standard type, message, stack, cause text, and enumerable error properties.
-Request path, direct peer IP, and User-Agent capture are independently disabled
-by default and require plugin opt-ins.
+No redaction is installed automatically. Rich terminal-error capture, request
+path, direct peer IP, and User-Agent capture are independently disabled by
+default and require plugin opt-ins. With `captureError: true`, the native `err`
+field retains Pino's standard type, message, stack, cause text, and enumerable
+error properties and can contain sensitive application data.
 
 Redaction is explicit root policy. In addition to application-owned paths, it
 may target the privacy-bearing package fields `path`, `peer_ip`, `user_agent`,
@@ -186,10 +187,11 @@ plugin options, so the logger envelope and provider fields cannot drift apart.
 | `traceHeader` | `"traceparent"` | W3C trace context header |
 | `tracestateHeader` | `"tracestate"` | W3C vendor trace state header |
 | `traceContextLevel` | `1` | Pinned W3C grammar and flag semantics; `1` or explicit `2` |
-| `message` | `"request completed"` | Terminal access-record message |
-| `capturePath` | `false` | Include the query-free concrete path and GCP `requestUrl` |
-| `capturePeerIp` | `false` | Include the direct socket peer as `peer_ip` and GCP `remoteIp` |
+| `message` | `"request completed"` | Compatibility option; any other value is rejected because the terminal message is fixed |
+| `capturePath` | `false` | Include a valid query-free origin-form path and GCP `requestUrl`; omit unavailable or malformed targets |
+| `capturePeerIp` | `false` | Include the canonical direct socket IP as `peer_ip` and GCP `remoteIp`; omit non-IP or zoned values |
 | `captureUserAgent` | `false` | Include one unambiguous User-Agent and GCP `userAgent` |
+| `captureError` | `false` | Include the native privacy-sensitive `err` field on abnormal terminal records |
 | `clock` | `performance.now` | Monotonic millisecond clock; primarily for deterministic tests |
 | `levelForStatus` | Built-in mapping | Synchronous status-to-level override |
 | `extraFields` | None | Synchronous application fields for the access record |
@@ -269,7 +271,7 @@ same one-shot terminal guard.
 | `peer_ip` | Opt-in direct socket peer; forwarded and proxy-derived values are ignored |
 | `user_agent` | Opt-in single unambiguous raw User-Agent value |
 | `terminal_reason` | `timeout`, `client_disconnect`, or `body_error` |
-| `err` | Observed `Error`, including standard type, message, and stack by default |
+| `err` | Opt-in observed `Error` (`captureError: true`), including standard type, message, and stack |
 | `httpRequest` | GCP HTTP request object, on the GCP preset only |
 
 Queries, bodies, cookies, authorization, forwarded IPs, and arbitrary headers
@@ -286,10 +288,9 @@ application explicitly passes to `app.log`, `request.log`, or `reply.log` are
 serialized normally unless the application configured root redaction or a
 serializer for that application-owned field.
 
-There is no default error redaction. If an application's privacy policy
-requires censoring error details or fields it explicitly opted into, configure
-the root `redact` option and include both top-level and GCP `httpRequest.*`
-paths where applicable.
+There is no automatic redaction after `captureError` or another sensitive field
+is explicitly enabled. Configure the root `redact` option for any opted-in data
+that must be censored, including nested `err.*` and GCP `httpRequest.*` paths.
 
 Default levels are `error` for 5xx, `warn` for 4xx, and `info` otherwise.
 Every abnormal terminal reason uses `error`, including a disconnect without an

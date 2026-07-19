@@ -1,7 +1,7 @@
 import type { FastifyBaseLogger, FastifyPluginCallback, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import type { Logger } from "pino";
-import { type AccessState, emitAccessRecord, observeStream, requestUserAgent } from "./access.js";
+import { type AccessState, canonicalPeerIp, emitAccessRecord, observeStream, requestUserAgent } from "./access.js";
 import { createRequestObservability, normalizeOptions } from "./context.js";
 import { bindingValuesEqual, canonicalLoggerProfile, createCanonicalChild, PROTECTED_LOG_FIELDS } from "./logger.js";
 import { correlationFields } from "./presets.js";
@@ -212,7 +212,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       if (options.capturePeerIp) {
         try {
           const candidate = request.raw.socket.remoteAddress;
-          peerIp = typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
+          peerIp = canonicalPeerIp(candidate);
         } catch {
           diagnose("peer_ip", "direct peer IP resolution failed; peer_ip was omitted");
         }
@@ -228,6 +228,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
         loggerBindings,
         peerIp,
         userAgent: options.captureUserAgent ? requestUserAgent(request) : undefined,
+        streamFailed: false,
         emitted: false,
         suppressAccess,
         ...(inspectLoggerBindings === undefined ? {} : { inspectLoggerBindings }),
@@ -237,7 +238,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
         if (!reply.raw.writableFinished) {
           emitAccessRecord(
             state,
-            state.error === undefined ? "client_disconnect" : "body_error",
+            state.streamFailed ? "body_error" : "client_disconnect",
             reply.raw.headersSent ? reply.raw.statusCode : undefined,
           );
         }
@@ -285,7 +286,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
         const sent = state.reply.raw.headersSent;
         emitAccessRecord(
           state,
-          state.error === undefined ? "client_disconnect" : "body_error",
+          state.streamFailed ? "body_error" : "client_disconnect",
           sent ? state.reply.raw.statusCode : undefined,
         );
       }

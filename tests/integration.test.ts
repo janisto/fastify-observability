@@ -269,21 +269,6 @@ describe("Fastify integration", () => {
     }
   });
 
-  it("uses the configured terminal message without emitting the default message", async () => {
-    const { app, records } = await buildTestApp({ message: "HTTP request finished" });
-    apps.push(app);
-    app.get("/", () => ({ ok: true }));
-
-    const response = await app.inject("/");
-
-    expect(response.statusCode).toBe(200);
-    const terminal = records.filter((record) => record.message === "HTTP request finished");
-    expect(terminal).toHaveLength(1);
-    expect(terminal[0]).toMatchObject({ method: "GET", status: 200 });
-    expect(terminal[0]).not.toHaveProperty("path");
-    expect(accessRecords(records)).toHaveLength(0);
-  });
-
   it("rejects ambiguous duplicate traceparent headers and falls back to the request ID", async () => {
     const { app, records } = await buildTestApp({}, { preset: "gcp" });
     apps.push(app);
@@ -421,8 +406,11 @@ describe("Fastify integration", () => {
     }
   });
 
-  it("uses final response status and retains full observed error details by default", async () => {
-    const { app, lines, records } = await buildTestApp();
+  it.each([
+    "default",
+    "gcp",
+  ] as const)("uses final response status and omits rich observed error details by default for %s", async (preset) => {
+    const { app, lines, records } = await buildTestApp({}, { preset });
     apps.push(app);
     app.get("/translated", async () => {
       const cause = Object.assign(new Error("root-cause-canary"), { code: "E_ROOT_CAUSE" });
@@ -434,25 +422,18 @@ describe("Fastify integration", () => {
     const response = await app.inject("/translated");
     expect(response.statusCode).toBe(418);
     const access = accessRecords(records)[0];
-    expect(access).toMatchObject({ level: 40, status: 418 });
-    expect(access?.["err"]).toMatchObject({
-      type: "Error",
-      metadata: { token: "error-token-canary" },
-    });
-    const error = access?.["err"] as Record<string, unknown> | undefined;
-    expect(error?.["message"]).toEqual(expect.stringContaining("translated-failure-canary"));
-    expect(error?.["message"]).toEqual(expect.stringContaining("root-cause-canary"));
-    expect(error?.["stack"]).toEqual(expect.stringContaining("translated-failure-canary"));
-    expect(error?.["stack"]).toEqual(expect.stringContaining("root-cause-canary"));
+    expect(access).toMatchObject(preset === "gcp" ? { severity: "WARNING", status: 418 } : { level: 40, status: 418 });
+    expect(access).not.toHaveProperty("err");
     const line = lines.find((candidate) => candidate.includes('"message":"request completed"'));
-    expect(line).toContain("translated-failure-canary");
-    expect(line).toContain("root-cause-canary");
-    expect(line).toContain("error-token-canary");
+    expect(line).toBeDefined();
+    expect(line).not.toContain("translated-failure-canary");
+    expect(line).not.toContain("root-cause-canary");
+    expect(line).not.toContain("error-token-canary");
   });
 
-  it("applies explicit root redaction to serialized terminal errors", async () => {
+  it("emits rich terminal errors only with explicit capture and applies root redaction", async () => {
     const { app, lines, records } = await buildTestApp(
-      {},
+      { captureError: true },
       {
         redact: {
           paths: ['["err"].message', 'err["stack"]', 'err.metadata["token"]'],
@@ -1292,11 +1273,11 @@ describe("Fastify integration", () => {
   it.each([
     ["an options array", [], "plugin options must be a record"],
     ["an unsupported key", { unsupported: true }, 'unsupported fastify-observability option "unsupported"'],
-    ["an empty message", { message: "" }, "message must be a non-empty string"],
-    ["a blank message", { message: " \t " }, "message must be a non-empty string"],
+    ["a noncanonical message", { message: "HTTP request finished" }, 'message must be exactly "request completed"'],
     ["a non-boolean path capture", { capturePath: 1 }, "capturePath must be a boolean"],
     ["a non-boolean peer capture", { capturePeerIp: 1 }, "capturePeerIp must be a boolean"],
     ["a non-boolean user-agent capture", { captureUserAgent: 1 }, "captureUserAgent must be a boolean"],
+    ["a non-boolean error capture", { captureError: 1 }, "captureError must be a boolean"],
     ["an unsupported trace context level", { traceContextLevel: 3 }, "traceContextLevel must be 1 or 2"],
     ["a non-function clock", { clock: 1 }, "clock must be a function"],
     ["an invalid request-ID header", { requestIdHeader: "bad header" }, "requestIdHeader must be a valid HTTP header"],

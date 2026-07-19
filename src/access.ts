@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from "fastify";
 import type { NormalizedOptions } from "./context.js";
 import { bindingValuesEqual, PROTECTED_LOG_FIELDS } from "./logger.js";
@@ -23,6 +24,7 @@ export interface AccessState {
   peerIp: string | undefined;
   userAgent: string | undefined;
   error?: Error;
+  streamFailed: boolean;
   emitted: boolean;
   suppressAccess: boolean;
   closeListener?: () => void;
@@ -49,26 +51,40 @@ export const RESERVED_FIELDS = new Set([
 
 const ACCESS_LOG_LEVELS: readonly AccessLogLevel[] = ["debug", "info", "warn", "error"];
 
-export function requestPath(rawUrl: string | undefined): string {
-  if (rawUrl === undefined || rawUrl.length === 0) {
-    return "/";
+export function requestPath(rawUrl: string | undefined): string | undefined {
+  if (rawUrl === undefined || !rawUrl.startsWith("/") || rawUrl.includes("#")) {
+    return undefined;
   }
-  if (rawUrl === "*") {
-    return rawUrl;
+  const query = rawUrl.indexOf("?");
+  const path = query === -1 ? rawUrl : rawUrl.slice(0, query);
+  return /%(?![0-9A-Fa-f]{2})/.test(path) ? undefined : path;
+}
+
+export function canonicalPeerIp(candidate: string | undefined): string | undefined {
+  if (candidate === undefined || candidate.includes("%")) {
+    return undefined;
   }
-  if (rawUrl.startsWith("/")) {
-    const query = rawUrl.indexOf("?");
-    return query === -1 ? rawUrl : rawUrl.slice(0, query);
+  const version = isIP(candidate);
+  if (version === 4) {
+    return candidate;
   }
-  try {
-    const parsed = new URL(rawUrl, "http://localhost");
-    return parsed.pathname || "/";
-  } catch {
-    return "/";
+  if (version !== 6) {
+    return undefined;
   }
+  const hostname = new URL(`http://[${candidate}]/`).hostname;
+  return hostname.slice(1, -1);
 }
 
 const ROUTE_PARAMETER = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+function containsControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && (codePoint < 0x20 || codePoint === 0x7f)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export function canonicalRouteTemplate(nativeTemplate: string): string | undefined {
   if (nativeTemplate === "*") {
@@ -110,7 +126,7 @@ function operationId(request: FastifyRequest): string | undefined {
   }
   try {
     const value = Reflect.get(schema, "operationId");
-    return typeof value === "string" && value.length > 0 ? value : undefined;
+    return typeof value === "string" && value.length > 0 && !containsControlCharacter(value) ? value : undefined;
   } catch {
     return undefined;
   }
@@ -118,7 +134,8 @@ function operationId(request: FastifyRequest): string | undefined {
 
 export function requestUserAgent(request: FastifyRequest): string | undefined {
   const values = rawHeaderValues(request.raw, "user-agent");
-  return values.length === 1 && values[0] !== undefined ? values[0] : undefined;
+  const value = values.length === 1 ? values[0] : undefined;
+  return value !== undefined && value.length > 0 && !containsControlCharacter(value) ? value : undefined;
 }
 
 function durationMilliseconds(state: AccessState): number {
@@ -248,7 +265,7 @@ function accessFields(
   if (reason !== "response") {
     fields["terminal_reason"] = reason;
   }
-  if (state.error !== undefined) {
+  if (state.options.captureError && state.error !== undefined) {
     fields["err"] = state.error;
   }
   if (state.options.preset === "gcp") {
@@ -318,6 +335,7 @@ export function observeStream(state: AccessState, payload: unknown): void {
   }
   const stream = candidate as StreamLike;
   const listener = (error: Error) => {
+    state.streamFailed = true;
     state.error = error instanceof Error ? error : new Error("response stream failed");
   };
   state.stream = stream;
@@ -361,7 +379,7 @@ export function emitAccessRecord(state: AccessState, reason: TerminalReason, sta
       return;
     }
     const fields = accessFields(state, reason, status, loggerBindings);
-    state.logger[level](fields, state.options.message);
+    state.logger[level](fields, "request completed");
   } catch {
     state.diagnose("logger", "access log emission failed; the HTTP response was preserved");
   }
