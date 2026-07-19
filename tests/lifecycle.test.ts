@@ -236,6 +236,64 @@ describe("real network lifecycle", () => {
     expect(topLevelKeyOccurrences(line, "status")).toBe(0);
   });
 
+  it("retains a committed status when timeout wins after headers", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      connectionTimeout: 30,
+      loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability, { capturePath: true });
+    let releaseSlowRoute: () => void = () => undefined;
+    const slowRoute = new Promise<void>((resolve) => {
+      releaseSlowRoute = resolve;
+    });
+    app.get("/partial", async (_request, reply) => {
+      reply.raw.writeHead(206, { "content-type": "text/plain" });
+      reply.raw.write("partial");
+      await slowRoute;
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    try {
+      await new Promise<void>((resolve) => {
+        const request = httpGet(`http://127.0.0.1:${serverPort(app)}/partial`, (response) => {
+          expect(response.statusCode).toBe(206);
+          response.resume();
+          response.once("close", resolve);
+        });
+        request.once("error", () => resolve());
+        request.once("close", () => resolve());
+      });
+      await waitForAccessRecords(stream, 1);
+    } finally {
+      releaseSlowRoute();
+      try {
+        await app.close();
+      } finally {
+        const index = openApps.indexOf(app);
+        if (index !== -1) {
+          openApps.splice(index, 1);
+        }
+      }
+    }
+
+    const records = accessRecords(stream.records);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ level: 50, status: 206, terminal_reason: "timeout" });
+    const line = stream.lines.find(
+      (candidate) => (JSON.parse(candidate) as { message?: string }).message === "request completed",
+    );
+    if (line === undefined) {
+      throw new Error("expected one raw timeout record");
+    }
+    expect(topLevelKeyOccurrences(line, "status")).toBe(1);
+    expect(topLevelKeyOccurrences(line, "terminal_reason")).toBe(1);
+  });
+
   it("emits one client-disconnect record for an incomplete upload", async () => {
     const stream = new JsonLineStream();
     const app = Fastify({

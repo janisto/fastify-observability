@@ -54,6 +54,15 @@ describe("traceparent", () => {
     expect(parseTraceparent(`${maximum}x`)).toBeNull();
   });
 
+  it("enforces the future-version limit in UTF-8 bytes", () => {
+    const maximum = `01-${TRACE_ID}-${PARENT_ID}-01-${"é".repeat(228)}`;
+    expect(maximum).toHaveLength(284);
+    expect(Buffer.byteLength(maximum, "utf8")).toBe(512);
+    expect(parseTraceparent(maximum)).not.toBeNull();
+    expect(Buffer.byteLength(`${maximum}x`, "utf8")).toBe(513);
+    expect(parseTraceparent(`${maximum}x`)).toBeNull();
+  });
+
   it.each([2, 35, 52])("rejects corruption at required separator index %i", (separatorIndex) => {
     const value = [...`00-${TRACE_ID}-${PARENT_ID}-01`];
     value[separatorIndex] = "_";

@@ -6,6 +6,9 @@ import { describe, expect, it } from "vitest";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const caller = /\bgh\s+api\b|\b(?:github|octokit)\.(?:rest\b|request\s*\(|paginate\s*\()|https?:\/\/api\.github\.com\b/;
 const lockedHeader = /X-GitHub-Api-Version["']?\s*(?::|=|\s)\s*["']?2026-03-10\b/;
+const headerName = /X-GitHub-Api-Version/gi;
+const clientAlias =
+  /\b(?:const\s+|let\s+|var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:new\s+)?[^\n]*(?:Octokit|GitHub|Github|octokit|github)\b/g;
 const automatedExtensions = new Set([
   ".bash",
   ".cjs",
@@ -49,16 +52,23 @@ function policyViolations(files: ReadonlyMap<string, string>): string[] {
       continue;
     }
     const lines = content.split("\n");
+    const aliases = new Set(
+      [...content.matchAll(clientAlias)].flatMap((match) => (match[1] === undefined ? [] : [match[1]])),
+    );
+    const isCaller = (line: string) =>
+      caller.test(line) ||
+      [...aliases].some((alias) => new RegExp(`\\b${alias}\\.(?:rest\\b|request\\s*\\(|paginate\\s*\\()`).test(line));
     for (const [index, line] of lines.entries()) {
-      if (!caller.test(line)) {
+      if (!isCaller(line)) {
         continue;
       }
       const limit = Math.min(lines.length, index + 12);
       let end = index + 1;
-      while (end < limit && !caller.test(lines[end] ?? "")) {
+      while (end < limit && !isCaller(lines[end] ?? "")) {
         end += 1;
       }
-      if (!lockedHeader.test(lines.slice(index, end).join("\n"))) {
+      const block = lines.slice(index, end).join("\n");
+      if ((block.match(headerName) ?? []).length !== 1 || !lockedHeader.test(block)) {
         violations.push(`${path}:${index + 1}`);
       }
     }
@@ -117,6 +127,19 @@ describe("GitHub REST API version policy", () => {
       'github.request("GET /one", {headers: {"X-GitHub-Api-Version": "2026-03-10"}});',
       'github.request("GET /two");',
     ].join("\n");
+    expect(policyViolations(new Map([["client.ts", content]]))).toEqual(["client.ts:2"]);
+  });
+
+  it("rejects conflicting versions in one caller block", () => {
+    const content = [
+      'github.request("GET /one", {headers: {"X-GitHub-Api-Version": "2026-03-10"}});',
+      'headers["X-GitHub-Api-Version"] = "2022-11-28";',
+    ].join("\n");
+    expect(policyViolations(new Map([["client.ts", content]]))).toEqual(["client.ts:1"]);
+  });
+
+  it("detects an aliased Octokit caller", () => {
+    const content = 'const client = new Octokit();\nclient.request("GET /repos/{owner}/{repo}");';
     expect(policyViolations(new Map([["client.ts", content]]))).toEqual(["client.ts:2"]);
   });
 

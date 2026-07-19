@@ -272,10 +272,10 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       next();
     });
 
-    fastify.addHook("onTimeout", (request, _reply, next) => {
+    fastify.addHook("onTimeout", (request, reply, next) => {
       const state = (request as InternalRequest)[STATE];
       if (state !== undefined) {
-        emitAccessRecord(state, "timeout");
+        emitAccessRecord(state, "timeout", reply.raw.headersSent ? reply.raw.statusCode : undefined);
       }
       next();
     });

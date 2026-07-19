@@ -39,6 +39,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   `{name}` and `{*path}` templates; ambiguous optional/composite forms are
   omitted.
 
+### Fixed
+
+- Enforced the `traceparent` input ceiling in UTF-8 bytes and retained an
+  authoritative committed response status when a timeout terminates the body.
+
 ## [1.0.1] - 2026-07-17
 
 ### Added

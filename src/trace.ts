@@ -20,7 +20,11 @@ export function resolveTraceContextLevel(value: unknown = 1): TraceContextLevel 
 
 export function parseTraceparent(value: unknown, traceContextLevel: TraceContextLevel = 1): TraceContext | null {
   const resolvedLevel = resolveTraceContextLevel(traceContextLevel);
-  if (typeof value !== "string" || value.length < BASE_TRACEPARENT_LENGTH || value.length > MAX_TRACEPARENT_LENGTH) {
+  if (
+    typeof value !== "string" ||
+    value.length < BASE_TRACEPARENT_LENGTH ||
+    Buffer.byteLength(value, "utf8") > MAX_TRACEPARENT_LENGTH
+  ) {
     return null;
   }
   if (value[2] !== "-" || value[35] !== "-" || value[52] !== "-") {
