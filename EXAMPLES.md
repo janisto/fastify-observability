@@ -27,6 +27,11 @@ plugin derives it from that logger. In the GCP example,
 `logging.googleapis.com/trace` intentionally remains the bare trace ID from the
 validated W3C `traceparent`; no project resource prefix is added.
 
+Trace Context Level 1 is the default. Set `traceContextLevel: 2` on the plugin
+to opt in to the pinned Level 2 grammar and the `trace_id_random` projection.
+The provider preset remains logger-owned and does not change the selected W3C
+level.
+
 ## GCP health-route logging
 
 Use the request logger for application records that should share the package's
@@ -36,7 +41,7 @@ dependency details alongside the package's terminal request record:
 ```ts
 app.get("/health", (request) => {
   request.log.info(
-    { service_name: "example-service", service_version: "2026.07.17", health_status: "ok" },
+    { service_name: "example-service", service_version: "1.0.0", health_status: "ok" },
     "health check",
   );
   request.log.debug(

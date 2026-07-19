@@ -12,6 +12,9 @@ export function correlationFields(context: RequestObservability, preset: Logging
   fields["parent_id"] = trace.parentId;
   fields["trace_flags"] = trace.flags;
   fields["trace_sampled"] = trace.sampled;
+  if (trace.traceIdRandom !== undefined) {
+    fields["trace_id_random"] = trace.traceIdRandom;
+  }
   addProviderFields(fields, trace, preset);
   return fields;
 }

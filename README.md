@@ -60,6 +60,7 @@ import Fastify, { LogController } from "fastify";
 import fastifyObservability, {
   createObservabilityLogger,
   createRequestIdGenerator,
+  getObservabilityLoggerProfile,
 } from "fastify-observability";
 
 const logger = createObservabilityLogger({
@@ -68,6 +69,10 @@ const logger = createObservabilityLogger({
   preset: "gcp",
   level: process.env.NODE_ENV === "development" ? "debug" : "info",
 });
+
+// The unpinned GCP preset resolves to the newest profile in this installed
+// package. This is currently { preset: "gcp", gcpProfileVersion: "0.1.0" }.
+getObservabilityLoggerProfile(logger);
 
 const app = Fastify({
   loggerInstance: logger,
@@ -124,6 +129,7 @@ record contract.
 | Logger option | Default | Purpose |
 | --- | --- | --- |
 | `preset` | `"default"` | `default`, `gcp`, `aws`, or `azure` field shape |
+| `gcpProfileVersion` | Newest installed GCP profile | Exact supported GCP profile pin; currently `"0.1.0"` |
 | `level` | `"info"` | Standard Pino threshold, including `silent` |
 | `base` | Pino default | Stable application bindings such as service metadata |
 | `redact` | None | Explicit root Pino redaction; no fields are redacted by default |
@@ -146,13 +152,13 @@ destination or one custom target that performs its own fan-out. The `default`,
 `transport.targets`. This follows Pino 10's
 [level-formatter boundary](https://github.com/pinojs/pino/blob/v10.3.1/docs/api.md#formatters-object).
 
-The default is full-fidelity logging. No redaction is installed automatically,
-and observed errors retain Pino's standard type, message, stack, cause text, and
-enumerable error properties. Concrete path, remote IP, User-Agent, and provider
-fields are also retained when available.
+No redaction is installed automatically, and observed errors retain Pino's
+standard type, message, stack, cause text, and enumerable error properties.
+Request path, direct peer IP, and User-Agent capture are independently disabled
+by default and require plugin opt-ins.
 
 Redaction is explicit root policy. In addition to application-owned paths, it
-may target the privacy-bearing package fields `path`, `remote_ip`, `user_agent`,
+may target the privacy-bearing package fields `path`, `peer_ip`, `user_agent`,
 nested `err.*`, and nested `httpRequest.*`. Correlation, envelope, structural,
 top-level `err`, and top-level `httpRequest` fields remain protected. Direct,
 bracket, quoted-bracket, and wildcard path forms are validated consistently.
@@ -179,7 +185,12 @@ plugin options, so the logger envelope and provider fields cannot drift apart.
 | `responseHeader` | Request-ID header | Response request-ID header, or `false` |
 | `traceHeader` | `"traceparent"` | W3C trace context header |
 | `tracestateHeader` | `"tracestate"` | W3C vendor trace state header |
+| `traceContextLevel` | `1` | Pinned W3C grammar and flag semantics; `1` or explicit `2` |
 | `message` | `"request completed"` | Terminal access-record message |
+| `capturePath` | `false` | Include the query-free concrete path and GCP `requestUrl` |
+| `capturePeerIp` | `false` | Include the direct socket peer as `peer_ip` and GCP `remoteIp` |
+| `captureUserAgent` | `false` | Include one unambiguous User-Agent and GCP `userAgent` |
+| `clock` | `performance.now` | Monotonic millisecond clock; primarily for deterministic tests |
 | `levelForStatus` | Built-in mapping | Synchronous status-to-level override |
 | `extraFields` | None | Synchronous application fields for the access record |
 
@@ -196,8 +207,10 @@ replaced. A custom generator is tried twice and then failure-contained with a
 package fallback. When a custom request-ID header is used, pass the same name to
 the generator and plugin.
 
-`isValidRequestId(value)` exposes the baseline check. `parseTraceparent(value)`
-exposes strict W3C parsing.
+`isValidRequestId(value)` exposes the baseline check. `parseTraceparent(value,
+level?)` exposes strict W3C parsing, and `resolveTraceContextLevel(value)`
+returns the effective supported level or throws for any value other than `1`
+or `2`.
 
 ## Request context
 
@@ -212,11 +225,27 @@ request.observability.traceContext;  // validated TraceContext | null
 The selected request ID is also `request.id`, the `request_id` Pino binding,
 and the configured response header.
 
-`traceparent` parsing rejects uppercase hex, zero IDs, duplicates, malformed
-delimiters, invalid version framing, and oversized input. Valid `tracestate`
-retains wire order while enforcing W3C key grammar, unique keys, 32 members, and
-512 bytes. Invalid trace input is ignored and correlation falls back to the
-request ID.
+`traceparent` parsing defaults to the pinned W3C Trace Context Level 1
+Recommendation and rejects uppercase hex, zero IDs, duplicates, malformed
+delimiters, invalid version framing, and oversized input. A dash-delimited
+future-version suffix is opaque. Valid `tracestate`
+field-lines retain wire order and are canonicalized by removing HTTP optional
+whitespace around members while enforcing the selected-level key grammar,
+unique keys, 32 members, and 512 bytes. Empty members are valid and count
+toward the limit. Invalid trace input is ignored and correlation falls back to
+the request ID.
+
+Level 2 is explicit and immutable after plugin registration:
+
+```ts
+await app.register(fastifyObservability, { traceContextLevel: 2 });
+```
+
+Both levels preserve `trace_flags` and derive `trace_sampled` from bit zero.
+Level 2 additionally exposes `traceIdRandom` on the request trace context and
+emits `trace_id_random` from bit one. Level 1 deliberately omits the random
+field. The flag reports caller input; it does not prove that this application
+generated a random trace ID.
 
 The incoming parent ID identifies the caller's span. The package does not claim
 that it is a span created by this service and does not emit a fake current-span
@@ -225,43 +254,48 @@ field.
 ## Terminal access record
 
 Normal, handled-error, and unhandled-error responses produce one terminal
-record in `onResponse`, using the final status sent on the wire. Timeouts,
-request aborts, response aborts, and observable response-stream failures share
-the same one-shot terminal guard.
+record in `onResponse`, using the final status sent on the wire. Authoritative
+client disconnects, timeouts, and observable response-stream failures share the
+same one-shot terminal guard.
 
 | Field | Meaning |
 | --- | --- |
 | `method` | HTTP method |
-| `path` | Concrete escaped path without a query string |
-| `path_template` | Matched Fastify route template; omitted for a normal 404 |
+| `path` | Opt-in concrete escaped path without a query string |
+| `path_template` | Canonical matched template (`{name}` and `{*path}`); omitted for a normal 404 or an unsafe/ambiguous native form |
 | `operation_id` | Explicit `schema.operationId` only |
 | `status` | Final status when trustworthy |
 | `duration_ms` | Non-negative monotonic duration including streaming |
-| `remote_ip` | `request.ip`, honoring the application's `trustProxy` policy |
-| `user_agent` | One unambiguous raw User-Agent value |
-| `terminal_reason` | `timeout`, `request_aborted`, or `response_aborted` |
+| `peer_ip` | Opt-in direct socket peer; forwarded and proxy-derived values are ignored |
+| `user_agent` | Opt-in single unambiguous raw User-Agent value |
+| `terminal_reason` | `timeout`, `client_disconnect`, or `body_error` |
 | `err` | Observed `Error`, including standard type, message, and stack by default |
 | `httpRequest` | GCP HTTP request object, on the GCP preset only |
 
-Queries, bodies, cookies, authorization, and arbitrary headers are never
-logged. Use `path_template` for low-cardinality aggregation; concrete `path`
-remains high-cardinality diagnostic data.
+Queries, bodies, cookies, authorization, forwarded IPs, and arbitrary headers
+are never logged. Use `path_template` for low-cardinality aggregation; opt-in
+concrete `path` remains high-cardinality diagnostic data.
+
+Fastify whole-segment `:name` parameters are emitted as `{name}` and its
+unnamed `*` catch-all is emitted as `{*path}`. Regex constraints are removed
+while the parameter name is retained. Optional or composite native segments
+are omitted because they do not have one unambiguous portable template.
 
 That is deliberate terminal-schema selection, not hidden redaction. Fields an
 application explicitly passes to `app.log`, `request.log`, or `reply.log` are
 serialized normally unless the application configured root redaction or a
 serializer for that application-owned field.
 
-There is no default redaction. If an application's privacy policy requires
-censoring or removing error details, concrete paths, remote addresses, or user
-agents, configure the explicit root `redact` option and include both top-level
-and GCP `httpRequest.*` paths where applicable.
+There is no default error redaction. If an application's privacy policy
+requires censoring error details or fields it explicitly opted into, configure
+the root `redact` option and include both top-level and GCP `httpRequest.*`
+paths where applicable.
 
 Default levels are `error` for 5xx, `warn` for 4xx, and `info` otherwise.
-Timeouts and observed internal stream failures use `error`; connection aborts
-without an exposed error use `warn`. `levelForStatus` can return the public
-`AccessLogLevel` union: `debug | info | warn | error`. Pino must also enable the
-selected level.
+Every abnormal terminal reason uses `error`, including a disconnect without an
+exposed `Error`. `levelForStatus` applies only to normal responses and can
+return the public `AccessLogLevel` union: `debug | info | warn | error`. Pino
+must also enable the selected level.
 
 If none of the package access levels are enabled, the package performs no
 status-level callback, binding inspection, field construction, or extra-field
@@ -321,6 +355,10 @@ Set `preset` in `createObservabilityLogger()`.
   `logging.googleapis.com/spanId`, because the incoming parent ID is not a
   current span created by this package. This matches Cloud Trace's current
   [preferred trace field format](https://docs.cloud.google.com/trace/docs/trace-log-integration).
+  Omitting `gcpProfileVersion` resolves once to the newest GCP profile supported
+  by the installed package, currently `0.1.0`; exact pinning accepts `"0.1.0"`.
+  Unsupported pins fail logger creation and resolution performs no network
+  lookup.
 - `aws` adds flat `xray_trace_id` in `1-8hex-24hex` form. It does not create an
   X-Ray segment or parse legacy X-Ray headers.
 - `azure` adds flat `operation_Id` and `operation_ParentId`. It does not start
@@ -340,8 +378,8 @@ kind is emitted at most once per plugin instance. `stderr` is used only if Pino
 throws synchronously while writing the diagnostic. A `silent` or higher logger
 threshold filters diagnostics normally.
 
-Logger inspection, the package's `levelForStatus` and `extraFields` callbacks,
-remote-IP resolution, stream observation, and access emission are
+Logger inspection, the package's clock, `levelForStatus`, and `extraFields`
+callbacks, direct-peer resolution, stream observation, and access emission are
 failure-contained after Fastify has created the request. Unsafe constructor
 wiring and failures before Fastify enters the request lifecycle can still fail
 startup or the request.
@@ -443,9 +481,10 @@ configuration, and Justfile recipe together when support is available.
   the [child-logger duplicate-key caveat](https://github.com/pinojs/pino/blob/v10.3.1/docs/child-loggers.md#duplicate-keys-caveat),
   and [redaction](https://github.com/pinojs/pino/blob/v10.3.1/docs/redaction.md)
   define the logger behavior guarded by the package.
-- [W3C Trace Context](https://www.w3.org/TR/trace-context/) defines strict
-  `traceparent` and `tracestate` syntax and identifies `parent-id` as the
-  caller's span rather than a span created by this service.
+- [W3C Trace Context Level 1 Recommendation](https://www.w3.org/TR/2021/REC-trace-context-1-20211123/)
+  defines the default `traceparent` and `tracestate` contract.
+- [W3C Trace Context Level 2 Candidate Recommendation Draft](https://www.w3.org/TR/2024/CRD-trace-context-2-20240328/)
+  defines the explicit Level 2 key grammar and random trace-ID flag.
 - [Google Cloud trace and log integration](https://docs.cloud.google.com/trace/docs/trace-log-integration)
   documents the bare `TRACE_ID` as the preferred trace field format.
 - [Google Cloud Trace release notes](https://docs.cloud.google.com/trace/docs/release-notes)

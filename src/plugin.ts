@@ -15,6 +15,23 @@ type InternalRequest = FastifyRequest & { [STATE]?: AccessState };
 
 type PinoLogger = FastifyBaseLogger & Logger;
 
+function startClock(
+  configured: () => number,
+  diagnose: (kind: string, message: string) => void,
+): { clock: () => number; started: number } {
+  try {
+    const started = configured();
+    if (!Number.isFinite(started)) {
+      throw new TypeError("clock returned a non-finite value");
+    }
+    return { clock: configured, started };
+  } catch {
+    diagnose("clock", "clock failed at request start; using the runtime monotonic clock");
+    const clock = () => performance.now();
+    return { clock, started: clock() };
+  }
+}
+
 function isPinoLogger(logger: FastifyBaseLogger): logger is PinoLogger {
   // The package marker establishes construction; these public methods verify the object still has Pino's contract.
   try {
@@ -130,7 +147,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
     };
 
     fastify.addHook("onRequest", (request, reply, next) => {
-      const started = performance.now();
+      const { clock, started } = startClock(options.clock, diagnose);
       if (!consumeRequestIdHandshake(request.raw, request.id, options.requestIdHeader)) {
         diagnose("request_id_setup", "validated request-ID generator handshake failed");
         next(new Error("fastify-observability request-ID setup is unsafe"));
@@ -191,23 +208,26 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
           diagnose("logger_setup", "Pino request logger setup failed; package access record omitted");
         }
       }
-      let remoteIp: string | undefined;
-      try {
-        const candidate = request.ip;
-        remoteIp = typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
-      } catch {
-        diagnose("remote_ip", "remote IP resolution failed; remote_ip was omitted");
+      let peerIp: string | undefined;
+      if (options.capturePeerIp) {
+        try {
+          const candidate = request.raw.socket.remoteAddress;
+          peerIp = typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
+        } catch {
+          diagnose("peer_ip", "direct peer IP resolution failed; peer_ip was omitted");
+        }
       }
       const state: AccessState = {
         started,
+        clock,
         request,
         reply,
         options,
         diagnose,
         logger,
         loggerBindings,
-        remoteIp,
-        userAgent: requestUserAgent(request),
+        peerIp,
+        userAgent: options.captureUserAgent ? requestUserAgent(request) : undefined,
         emitted: false,
         suppressAccess,
         ...(inspectLoggerBindings === undefined ? {} : { inspectLoggerBindings }),
@@ -217,7 +237,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
         if (!reply.raw.writableFinished) {
           emitAccessRecord(
             state,
-            reply.raw.headersSent ? "response_aborted" : "request_aborted",
+            state.error === undefined ? "client_disconnect" : "body_error",
             reply.raw.headersSent ? reply.raw.statusCode : undefined,
           );
         }
@@ -265,7 +285,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
         const sent = state.reply.raw.headersSent;
         emitAccessRecord(
           state,
-          sent ? "response_aborted" : "request_aborted",
+          state.error === undefined ? "client_disconnect" : "body_error",
           sent ? state.reply.raw.statusCode : undefined,
         );
       }

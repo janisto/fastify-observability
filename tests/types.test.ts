@@ -4,11 +4,15 @@ import plugin, {
   createObservabilityLogger,
   createRequestIdGenerator,
   fastifyObservability,
+  type GcpProfileVersion,
+  getObservabilityLoggerProfile,
   type LoggingPreset,
   type ObservabilityLogger,
   type ObservabilityLoggerOptions,
+  type ObservabilityLoggerProfile,
   type RequestObservability,
   type TraceContext,
+  type TraceContextLevel,
 } from "fastify-observability";
 import type { Bindings } from "pino";
 import { describe, expect, expectTypeOf, it } from "vitest";
@@ -22,7 +26,13 @@ describe("public types", () => {
     expectTypeOf(plugin).toBeFunction();
     expectTypeOf<AccessLogLevel>().toEqualTypeOf<"debug" | "info" | "warn" | "error">();
     expectTypeOf<LoggingPreset>().toEqualTypeOf<"default" | "gcp" | "aws" | "azure">();
+    expectTypeOf<GcpProfileVersion>().toEqualTypeOf<"0.1.0">();
+    expectTypeOf<TraceContextLevel>().toEqualTypeOf<1 | 2>();
+    expectTypeOf<import("fastify-observability").FastifyObservabilityOptions["traceContextLevel"]>().toEqualTypeOf<
+      TraceContextLevel | undefined
+    >();
     expectTypeOf<ObservabilityLoggerOptions["preset"]>().toEqualTypeOf<LoggingPreset | undefined>();
+    expectTypeOf<ObservabilityLoggerOptions["gcpProfileVersion"]>().toEqualTypeOf<GcpProfileVersion | undefined>();
     expectTypeOf<ObservabilityLoggerOptions["level"]>().toEqualTypeOf<
       "trace" | "debug" | "info" | "warn" | "error" | "fatal" | "silent" | undefined
     >();
@@ -31,8 +41,18 @@ describe("public types", () => {
     expectTypeOf(createObservabilityLogger()).toMatchTypeOf<FastifyBaseLogger>();
     expectTypeOf(createObservabilityLogger().child({ component: "catalog" })).toEqualTypeOf<ObservabilityLogger>();
     expectTypeOf(createObservabilityLogger().bindings()).toEqualTypeOf<Bindings>();
+    expectTypeOf(
+      getObservabilityLoggerProfile(createObservabilityLogger()),
+    ).toEqualTypeOf<ObservabilityLoggerProfile>();
     const register = (app: FastifyInstance) => {
-      app.register(plugin, { levelForStatus: () => "debug" });
+      app.register(plugin, {
+        capturePath: true,
+        capturePeerIp: true,
+        captureUserAgent: true,
+        traceContextLevel: 2,
+        clock: () => 0,
+        levelForStatus: () => "debug",
+      });
       app.get("/", (request) => {
         expectTypeOf(request.observability).toEqualTypeOf<RequestObservability>();
         return request.observability.requestId;

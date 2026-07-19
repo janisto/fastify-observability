@@ -44,7 +44,9 @@ describe("examples", () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers["x-request-id"]).toBe("example-request");
       expect(response.json()).toMatchObject({ requestId: "example-request", correlationId: TRACE_ID });
-      expect(canonicalLoggerProfile(app.log)).toEqual({ preset });
+      expect(canonicalLoggerProfile(app.log)).toEqual(
+        preset === "gcp" ? { preset, gcpProfileVersion: "0.1.0" } : { preset },
+      );
       expect(app.hasRequestDecorator("observability")).toBe(true);
       expect(app.hasRoute({ method: "GET", url: "/" })).toBe(false);
       expect(requestBindings).toMatchObject({

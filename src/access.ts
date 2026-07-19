@@ -4,7 +4,7 @@ import { bindingValuesEqual, PROTECTED_LOG_FIELDS } from "./logger.js";
 import { rawHeaderValues } from "./request-id.js";
 import type { AccessLogLevel } from "./types.js";
 
-export type TerminalReason = "response" | "timeout" | "request_aborted" | "response_aborted";
+export type TerminalReason = "response" | "timeout" | "client_disconnect" | "body_error";
 
 interface AccessLogger extends FastifyBaseLogger {
   isLevelEnabled(level: AccessLogLevel): boolean;
@@ -12,6 +12,7 @@ interface AccessLogger extends FastifyBaseLogger {
 
 export interface AccessState {
   readonly started: number;
+  readonly clock: () => number;
   readonly request: FastifyRequest;
   readonly reply: FastifyReply;
   readonly options: NormalizedOptions;
@@ -19,7 +20,7 @@ export interface AccessState {
   readonly loggerBindings: Readonly<Record<string, unknown>>;
   readonly inspectLoggerBindings?: () => Readonly<Record<string, unknown>>;
   logger: AccessLogger;
-  remoteIp: string | undefined;
+  peerIp: string | undefined;
   userAgent: string | undefined;
   error?: Error;
   emitted: boolean;
@@ -67,6 +68,41 @@ export function requestPath(rawUrl: string | undefined): string {
   }
 }
 
+const ROUTE_PARAMETER = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+
+export function canonicalRouteTemplate(nativeTemplate: string): string | undefined {
+  if (nativeTemplate === "*") {
+    return "/{*path}";
+  }
+  if (!nativeTemplate.startsWith("/") || nativeTemplate.includes("?") || nativeTemplate.includes("#")) {
+    return undefined;
+  }
+  const canonical: string[] = [];
+  const segments = nativeTemplate.slice(1).split("/");
+  for (const [index, segment] of segments.entries()) {
+    if (segment === "*") {
+      if (index !== segments.length - 1) {
+        return undefined;
+      }
+      canonical.push("{*path}");
+      continue;
+    }
+    if (segment.startsWith(":")) {
+      const match = /^:([A-Za-z_][A-Za-z0-9_]{0,63})(?:\([^/?]+\))?$/.exec(segment);
+      if (match?.[1] === undefined || !ROUTE_PARAMETER.test(match[1])) {
+        return undefined;
+      }
+      canonical.push(`{${match[1]}}`);
+      continue;
+    }
+    if (segment.includes(":") || segment.includes("*") || segment.includes("{") || segment.includes("}")) {
+      return undefined;
+    }
+    canonical.push(segment);
+  }
+  return `/${canonical.join("/")}`;
+}
+
 function operationId(request: FastifyRequest): string | undefined {
   const schema: unknown = request.routeOptions.schema;
   if (schema === null || typeof schema !== "object") {
@@ -85,9 +121,19 @@ export function requestUserAgent(request: FastifyRequest): string | undefined {
   return values.length === 1 && values[0] !== undefined ? values[0] : undefined;
 }
 
-function durationMilliseconds(started: number): number {
-  const value = performance.now() - started;
-  return Number.isFinite(value) && value > 0 ? value : 0;
+function durationMilliseconds(state: AccessState): number {
+  let value: number;
+  try {
+    value = state.clock() - state.started;
+  } catch {
+    state.diagnose("clock", "clock failed; access duration fell back to zero");
+    return 0;
+  }
+  if (!Number.isFinite(value)) {
+    state.diagnose("clock", "clock returned a non-finite value; access duration fell back to zero");
+    return 0;
+  }
+  return value > 0 ? value : 0;
 }
 
 function protobufDuration(durationMs: number): string {
@@ -168,24 +214,32 @@ function accessFields(
   loggerBindings: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
   const request = state.request;
-  const durationMs = durationMilliseconds(state.started);
-  const path = requestPath(request.raw.url);
+  const durationMs = durationMilliseconds(state);
+  const path = state.options.capturePath ? requestPath(request.raw.url) : undefined;
   const fields: Record<string, unknown> = {};
   fields["method"] = request.method;
-  fields["path"] = path;
-  if (!request.is404 && request.routeOptions.url !== undefined) {
-    fields["path_template"] = request.routeOptions.url;
+  if (path !== undefined) {
+    fields["path"] = path;
   }
-  const explicitOperationId = operationId(request);
-  if (explicitOperationId !== undefined) {
-    fields["operation_id"] = explicitOperationId;
+  if (!request.is404) {
+    const routeUrl: unknown = request.routeOptions.url;
+    if (typeof routeUrl === "string") {
+      const pathTemplate = canonicalRouteTemplate(routeUrl);
+      if (pathTemplate !== undefined) {
+        fields["path_template"] = pathTemplate;
+      }
+    }
+    const explicitOperationId = operationId(request);
+    if (explicitOperationId !== undefined) {
+      fields["operation_id"] = explicitOperationId;
+    }
   }
   if (status !== undefined) {
     fields["status"] = status;
   }
   fields["duration_ms"] = durationMs;
-  if (state.remoteIp !== undefined) {
-    fields["remote_ip"] = state.remoteIp;
+  if (state.peerIp !== undefined) {
+    fields["peer_ip"] = state.peerIp;
   }
   const agent = state.userAgent;
   if (agent !== undefined) {
@@ -200,13 +254,15 @@ function accessFields(
   if (state.options.preset === "gcp") {
     const httpRequest: Record<string, unknown> = {};
     httpRequest["requestMethod"] = request.method;
-    httpRequest["requestUrl"] = path;
+    if (path !== undefined) {
+      httpRequest["requestUrl"] = path;
+    }
     if (status !== undefined) {
       httpRequest["status"] = status;
     }
     httpRequest["latency"] = protobufDuration(durationMs);
-    if (state.remoteIp !== undefined) {
-      httpRequest["remoteIp"] = state.remoteIp;
+    if (state.peerIp !== undefined) {
+      httpRequest["remoteIp"] = state.peerIp;
     }
     if (agent !== undefined) {
       httpRequest["userAgent"] = agent;
@@ -296,12 +352,7 @@ export function emitAccessRecord(state: AccessState, reason: TerminalReason, sta
     if (!ACCESS_LOG_LEVELS.some((candidate) => state.logger.isLevelEnabled(candidate))) {
       return;
     }
-    const level =
-      reason === "response" && status !== undefined
-        ? normalLevel(state, status)
-        : state.error !== undefined || reason === "timeout"
-          ? "error"
-          : "warn";
+    const level = reason === "response" ? (status === undefined ? "info" : normalLevel(state, status)) : "error";
     if (!state.logger.isLevelEnabled(level)) {
       return;
     }

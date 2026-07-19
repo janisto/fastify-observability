@@ -50,6 +50,79 @@ async function waitForAccessRecords(stream: JsonLineStream, expected: number) {
 }
 
 describe("real network lifecycle", () => {
+  it("replaces duplicate and invalid request IDs before response and terminal output", async () => {
+    const stream = new JsonLineStream();
+    const generated = ["duplicate-replaced", "generated-safe"];
+    const clockValues = [0, 2, 10, 11];
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator({ generate: () => generated.shift() ?? "unexpected-generated" }),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability, { clock: () => clockValues.shift() ?? 99 });
+    app.get("/request-id", (_request, reply) => reply.code(204).send());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    const duplicateResponse = await new Promise<{ requestId: string | undefined; status: number | undefined }>(
+      (resolve, reject) => {
+        const request = httpRequest(
+          {
+            host: "127.0.0.1",
+            port: serverPort(app),
+            path: "/request-id",
+            headers: { "x-request-id": ["caller-one", "caller-two"] },
+          },
+          (incoming) => {
+            incoming.resume();
+            incoming.on("end", () =>
+              resolve({
+                requestId: incoming.headers["x-request-id"] as string | undefined,
+                status: incoming.statusCode,
+              }),
+            );
+          },
+        );
+        request.once("error", reject);
+        request.end();
+      },
+    );
+    const invalidResponse = await fetch(`http://127.0.0.1:${serverPort(app)}/request-id`, {
+      headers: { "x-request-id": "bad value" },
+    });
+    await invalidResponse.arrayBuffer();
+
+    expect(duplicateResponse).toEqual({ requestId: "duplicate-replaced", status: 204 });
+    expect(invalidResponse.status).toBe(204);
+    expect(invalidResponse.headers.get("x-request-id")).toBe("generated-safe");
+    const records = await waitForAccessRecords(stream, 2);
+    expect(records).toEqual([
+      expect.objectContaining({
+        message: "request completed",
+        request_id: "duplicate-replaced",
+        correlation_id: "duplicate-replaced",
+        method: "GET",
+        duration_ms: 2,
+        status: 204,
+        path_template: "/request-id",
+      }),
+      expect.objectContaining({
+        message: "request completed",
+        request_id: "generated-safe",
+        correlation_id: "generated-safe",
+        method: "GET",
+        duration_ms: 1,
+        status: 204,
+        path_template: "/request-id",
+      }),
+    ]);
+    const raw = stream.lines.join("\n");
+    for (const forbidden of ["caller-one", "caller-two", "bad value"]) {
+      expect(raw).not.toContain(forbidden);
+    }
+  });
+
   it("rejects duplicate request IDs over HTTP/1.1 and isolates concurrent requests", async () => {
     const stream = new JsonLineStream();
     const app = Fastify({
@@ -59,7 +132,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePath: true });
     app.get("/", (request) => ({ requestId: request.observability.requestId }));
     await app.listen({ host: "127.0.0.1", port: 0 });
 
@@ -119,7 +192,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePath: true });
     let releaseSlowRoute: () => void = () => undefined;
     const slowRoute = new Promise<void>((resolve) => {
       releaseSlowRoute = resolve;
@@ -163,7 +236,7 @@ describe("real network lifecycle", () => {
     expect(topLevelKeyOccurrences(line, "status")).toBe(0);
   });
 
-  it("emits one request-aborted record for an incomplete upload", async () => {
+  it("emits one client-disconnect record for an incomplete upload", async () => {
     const stream = new JsonLineStream();
     const app = Fastify({
       loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
@@ -172,7 +245,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePath: true });
     app.post("/upload", () => ({ ok: true }));
     await app.listen({ host: "127.0.0.1", port: 0 });
 
@@ -191,7 +264,7 @@ describe("real network lifecycle", () => {
     });
     const records = await waitForAccessRecords(stream, 1);
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ level: 40, terminal_reason: "request_aborted" });
+    expect(records[0]).toMatchObject({ level: 50, terminal_reason: "client_disconnect" });
     expect(records[0]?.["status"]).toBeUndefined();
     expect(records[0]?.["err"]).toBeUndefined();
   });
@@ -206,7 +279,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePath: true });
     app.get("/h2", (request) => ({ requestId: request.observability.requestId }));
     await app.listen({ host: "127.0.0.1", port: 0 });
 
@@ -257,7 +330,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePath: true });
     app.get("/broken", (_request, reply) => {
       let started = false;
       const body = new Readable({
@@ -294,14 +367,14 @@ describe("real network lifecycle", () => {
     expect(records[0]).toMatchObject({
       level: 50,
       status: 200,
-      terminal_reason: "response_aborted",
+      terminal_reason: "body_error",
       err: { message: "stream exploded" },
     });
     const line = stream.lines.find(
       (candidate) => (JSON.parse(candidate) as { message?: string }).message === "request completed",
     );
     if (line === undefined) {
-      throw new Error("expected one raw response-aborted record");
+      throw new Error("expected one raw body-error record");
     }
     for (const key of ["status", "terminal_reason", "err"]) {
       expect(topLevelKeyOccurrences(line, key)).toBe(1);

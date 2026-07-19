@@ -21,12 +21,16 @@ const TRACEPARENT = `00-${TRACE_ID}-${PARENT_ID}-01`;
 
 const apps: Array<{ close(): Promise<unknown> }> = [];
 
-async function gcpHealthRequest(level: "debug" | "info") {
-  const { app, lines, records } = await buildTestApp({}, { preset: "gcp", level });
+async function healthRequest(preset: "default" | "gcp", level: "debug" | "info") {
+  let clockCalls = 0;
+  const { app, lines, records } = await buildTestApp(
+    { clock: () => (clockCalls++ === 0 ? 1_000 : 1_012.5) },
+    { preset, level },
+  );
   apps.push(app);
-  app.get("/health", (request) => {
+  app.get("/health", { schema: { operationId: "health_check" } as never }, (request) => {
     request.log.info(
-      { service_name: "example-service", service_version: "2026.07.17", health_status: "ok" },
+      { service_name: "example-service", service_version: "1.0.0", health_status: "ok" },
       "health check",
     );
     request.log.debug({ dependency: "database", dependency_status: "ok", check_duration_ms: 3 }, "dependency check");
@@ -42,7 +46,7 @@ afterEach(async () => {
 
 describe("Fastify integration", () => {
   it("writes GCP application info, application debug, and one terminal health record", async () => {
-    const { lines, records, response } = await gcpHealthRequest("debug");
+    const { lines, records, response } = await healthRequest("gcp", "debug");
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe("ok");
@@ -52,7 +56,7 @@ describe("Fastify integration", () => {
       severity: "INFO",
       message: "health check",
       service_name: "example-service",
-      service_version: "2026.07.17",
+      service_version: "1.0.0",
       health_status: "ok",
     });
     expect(records[1]).toMatchObject({
@@ -69,12 +73,18 @@ describe("Fastify integration", () => {
       severity: "INFO",
       message: "request completed",
       method: "GET",
-      path: "/health",
       path_template: "/health",
+      operation_id: "health_check",
+      duration_ms: 12.5,
       status: 200,
-      httpRequest: { requestMethod: "GET", requestUrl: "/health", status: 200 },
+      httpRequest: { requestMethod: "GET", status: 200, latency: "0.0125s" },
     });
-    expect(records[2]?.["httpRequest"]).toMatchObject({ latency: expect.any(String) });
+    for (const privateField of ["path", "peer_ip", "remote_ip", "user_agent"]) {
+      expect(records[2]?.[privateField]).toBeUndefined();
+    }
+    for (const privateField of ["requestUrl", "remoteIp", "userAgent"]) {
+      expect((records[2]?.["httpRequest"] as Record<string, unknown> | undefined)?.[privateField]).toBeUndefined();
+    }
     for (const applicationOnly of [
       "service_name",
       "service_version",
@@ -89,7 +99,7 @@ describe("Fastify integration", () => {
   });
 
   it("filters health debug details at the GCP info threshold", async () => {
-    const { lines, records, response } = await gcpHealthRequest("info");
+    const { lines, records, response } = await healthRequest("gcp", "info");
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe("ok");
@@ -100,11 +110,52 @@ describe("Fastify integration", () => {
     expect(lines.join("\n")).not.toContain("check_duration_ms");
   });
 
+  it.each([
+    ["debug", ["health check", "dependency check", "request completed"]],
+    ["info", ["health check", "request completed"]],
+  ] as const)("writes the exact core health projection at the %s threshold", async (level, messages) => {
+    const { lines, records, response } = await healthRequest("default", level);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("ok");
+    expect(response.headers["x-request-id"]).toBe("health-example");
+    expect(records.map((record) => record.message)).toEqual(messages);
+    expect(lines).toHaveLength(messages.length);
+    for (const record of records) {
+      expect(record).toMatchObject({ request_id: "health-example", correlation_id: "health-example" });
+      expect(record["severity"]).toBeUndefined();
+      expect(record["httpRequest"]).toBeUndefined();
+    }
+    expect(records[0]).toMatchObject({
+      message: "health check",
+      service_name: "example-service",
+      service_version: "1.0.0",
+      health_status: "ok",
+    });
+    const terminal = records.at(-1);
+    expect(terminal).toMatchObject({
+      message: "request completed",
+      method: "GET",
+      duration_ms: 12.5,
+      status: 200,
+      path_template: "/health",
+      operation_id: "health_check",
+    });
+    for (const privateField of ["path", "peer_ip", "remote_ip", "user_agent"]) {
+      expect(terminal?.[privateField]).toBeUndefined();
+    }
+    if (level === "info") {
+      expect(lines.join("\n")).not.toContain("dependency check");
+      expect(lines.join("\n")).not.toContain("check_duration_ms");
+    }
+    expect(accessRecords(records)).toHaveLength(1);
+  });
+
   it("shares validated request and trace context across handler, response, and access log", async () => {
-    const { app, records } = await buildTestApp({}, { preset: "gcp" });
+    const { app, records } = await buildTestApp({ capturePath: true }, { preset: "gcp" });
     apps.push(app);
-    app.get("/items/:id", { schema: { operationId: "get_item" } as never }, (request, reply) => {
-      request.log.info({ item_id: (request.params as { id: string }).id }, "handler log");
+    app.get("/items/:item_id", { schema: { operationId: "get_item" } as never }, (request, reply) => {
+      request.log.info({ item_id: (request.params as { item_id: string }).item_id }, "handler log");
       reply.log.info("reply log");
       expect(Object.isFrozen(request.observability)).toBe(true);
       expect(Object.isFrozen(request.observability.traceContext)).toBe(true);
@@ -127,7 +178,7 @@ describe("Fastify integration", () => {
       request_id: "caller-A",
       correlation_id: TRACE_ID,
       path: "/items/42",
-      path_template: "/items/:id",
+      path_template: "/items/{item_id}",
       operation_id: "get_item",
       status: 200,
       "logging.googleapis.com/trace": TRACE_ID,
@@ -205,9 +256,8 @@ describe("Fastify integration", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(accessRecords(stream.records)).toEqual([
-      expect.objectContaining({ method: "POST", path: "/private", status: 200 }),
-    ]);
+    expect(accessRecords(stream.records)).toEqual([expect.objectContaining({ method: "POST", status: 200 })]);
+    expect(accessRecords(stream.records)[0]).not.toHaveProperty("path");
     const accessLine = stream.lines.find(
       (line) => (JSON.parse(line) as { message?: string }).message === "request completed",
     );
@@ -229,7 +279,8 @@ describe("Fastify integration", () => {
     expect(response.statusCode).toBe(200);
     const terminal = records.filter((record) => record.message === "HTTP request finished");
     expect(terminal).toHaveLength(1);
-    expect(terminal[0]).toMatchObject({ method: "GET", path: "/", status: 200 });
+    expect(terminal[0]).toMatchObject({ method: "GET", status: 200 });
+    expect(terminal[0]).not.toHaveProperty("path");
     expect(accessRecords(records)).toHaveLength(0);
   });
 
@@ -341,6 +392,32 @@ describe("Fastify integration", () => {
         trace_sampled: false,
         "logging.googleapis.com/trace_sampled": false,
       });
+      expect(record?.["trace_id_random"]).toBeUndefined();
+    }
+  });
+
+  it("projects the random trace-ID flag only in explicit Level 2 mode", async () => {
+    const { app, records } = await buildTestApp({ traceContextLevel: 2 }, { preset: "gcp" });
+    apps.push(app);
+    app.get("/", (request) => {
+      request.log.info("level 2 handler");
+      return request.observability;
+    });
+
+    const response = await app.inject({
+      url: "/",
+      headers: { traceparent: `00-${TRACE_ID}-${PARENT_ID}-03` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      traceContext: { flags: "03", sampled: true, traceContextLevel: 2, traceIdRandom: true },
+    });
+    for (const record of [
+      records.find((candidate) => candidate.message === "level 2 handler"),
+      accessRecords(records)[0],
+    ]) {
+      expect(record).toMatchObject({ trace_flags: "03", trace_sampled: true, trace_id_random: true });
     }
   });
 
@@ -410,22 +487,11 @@ describe("Fastify integration", () => {
     expect(topLevelKeyOccurrences(line as string, "err")).toBe(1);
   });
 
-  it("can explicitly remove privacy-bearing request fields without losing structural access data", async () => {
+  it("keeps privacy-bearing request fields disabled by default without losing structural access data", async () => {
     const { app, lines, records } = await buildTestApp(
       {},
       {
         preset: "gcp",
-        redact: {
-          paths: [
-            '["path"]',
-            "remote_ip",
-            '["user_agent"]',
-            'httpRequest["requestUrl"]',
-            '["httpRequest"].remoteIp',
-            "httpRequest.userAgent",
-          ],
-          remove: true,
-        },
       },
     );
     apps.push(app);
@@ -440,12 +506,12 @@ describe("Fastify integration", () => {
     const access = accessRecords(records)[0];
     expect(access).toMatchObject({
       method: "GET",
-      path_template: "/customers/:id",
+      path_template: "/customers/{id}",
       status: 200,
       httpRequest: { requestMethod: "GET", status: 200 },
     });
     expect(access).not.toHaveProperty("path");
-    expect(access).not.toHaveProperty("remote_ip");
+    expect(access).not.toHaveProperty("peer_ip");
     expect(access).not.toHaveProperty("user_agent");
     expect(access?.["httpRequest"]).not.toHaveProperty("requestUrl");
     expect(access?.["httpRequest"]).not.toHaveProperty("remoteIp");
@@ -455,6 +521,26 @@ describe("Fastify integration", () => {
     expect(line).not.toContain("private-path-canary");
     expect(line).not.toContain("private-agent-canary");
     expect(line).not.toContain("127.0.0.1");
+  });
+
+  it("keeps path and user-agent capture as independent explicit opt-ins", async () => {
+    const pathOnly = await buildTestApp({ capturePath: true }, { preset: "gcp" });
+    const agentOnly = await buildTestApp({ captureUserAgent: true }, { preset: "gcp" });
+    apps.push(pathOnly.app, agentOnly.app);
+    pathOnly.app.get("/private", () => ({ ok: true }));
+    agentOnly.app.get("/private", () => ({ ok: true }));
+
+    await pathOnly.app.inject({ url: "/private?secret=yes", headers: { "user-agent": "agent/1" } });
+    await agentOnly.app.inject({ url: "/private?secret=yes", headers: { "user-agent": "agent/1" } });
+
+    const pathRecord = accessRecords(pathOnly.records)[0];
+    expect(pathRecord).toMatchObject({ path: "/private", httpRequest: { requestUrl: "/private" } });
+    expect(pathRecord).not.toHaveProperty("user_agent");
+    expect(pathRecord?.["httpRequest"]).not.toHaveProperty("userAgent");
+    const agentRecord = accessRecords(agentOnly.records)[0];
+    expect(agentRecord).toMatchObject({ user_agent: "agent/1", httpRequest: { userAgent: "agent/1" } });
+    expect(agentRecord).not.toHaveProperty("path");
+    expect(agentRecord?.["httpRequest"]).not.toHaveProperty("requestUrl");
   });
 
   it("honors a debug level selected by levelForStatus", async () => {
@@ -523,8 +609,29 @@ describe("Fastify integration", () => {
     expect(stderr).not.toHaveBeenCalled();
   });
 
+  it("contains a finish-clock failure and emits a deterministic zero duration", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    let calls = 0;
+    const { app, records } = await buildTestApp({
+      clock: () => {
+        if (calls++ === 0) {
+          return 1_000;
+        }
+        throw new Error("clock secret must not escape");
+      },
+    });
+    apps.push(app);
+    app.get("/", () => ({ ok: true }));
+
+    expect((await app.inject("/")).statusCode).toBe(200);
+    expect(accessRecords(records)[0]).toMatchObject({ duration_ms: 0 });
+    expect(diagnosticKinds(records)).toEqual(["clock"]);
+    expect(JSON.stringify(records)).not.toContain("clock secret must not escape");
+    expect(stderr).not.toHaveBeenCalled();
+  });
+
   it("emits one terminal record after a successful response stream completes", async () => {
-    const { app, records } = await buildTestApp();
+    const { app, records } = await buildTestApp({ capturePath: true });
     apps.push(app);
     app.get("/stream", () => Readable.from(["one", "two"]));
     expect((await app.inject("/stream")).body).toBe("onetwo");
@@ -535,7 +642,7 @@ describe("Fastify integration", () => {
   });
 
   it("emits a query-free 404 record without inventing a route template", async () => {
-    const { app, records } = await buildTestApp();
+    const { app, records } = await buildTestApp({ capturePath: true });
     apps.push(app);
 
     expect((await app.inject("/missing?private=yes")).statusCode).toBe(404);
@@ -543,6 +650,25 @@ describe("Fastify integration", () => {
     const missing = accessRecords(records)[0];
     expect(missing).toMatchObject({ status: 404, path: "/missing" });
     expect(missing?.["path_template"]).toBeUndefined();
+  });
+
+  it("keeps representative parameter and catch-all identity stable across request values", async () => {
+    const { app, records } = await buildTestApp();
+    apps.push(app);
+    app.get("/items/:item_id", { schema: { operationId: "get_item" } as never }, () => ({ ok: true }));
+    app.get("/files/*", { schema: { operationId: "get_file" } as never }, () => ({ ok: true }));
+
+    expect((await app.inject("/items/tenant-a")).statusCode).toBe(200);
+    expect((await app.inject("/items/tenant-b")).statusCode).toBe(200);
+    expect((await app.inject("/files/tenant-a/one")).statusCode).toBe(200);
+    expect((await app.inject("/files/tenant-b/two")).statusCode).toBe(200);
+
+    expect(accessRecords(records).map(({ path_template, operation_id }) => ({ path_template, operation_id }))).toEqual([
+      { path_template: "/items/{item_id}", operation_id: "get_item" },
+      { path_template: "/items/{item_id}", operation_id: "get_item" },
+      { path_template: "/files/{*path}", operation_id: "get_file" },
+      { path_template: "/files/{*path}", operation_id: "get_file" },
+    ]);
   });
 
   it("can disable only the response request-ID header", async () => {
@@ -669,6 +795,9 @@ describe("Fastify integration", () => {
     });
     apps.push(app);
     await app.register(fastifyObservability, {
+      capturePath: true,
+      capturePeerIp: true,
+      captureUserAgent: true,
       extraFields: () => ({
         component: "catalog",
         service: { name: "api", metadata: { request_id: "nested-application-value" } },
@@ -724,7 +853,7 @@ describe("Fastify integration", () => {
       path_template: "/",
       operation_id: "raw_access",
       status: 200,
-      remote_ip: "127.0.0.1",
+      peer_ip: "127.0.0.1",
       user_agent: "raw-test/1.0",
       release_channel: "stable",
     });
@@ -735,7 +864,7 @@ describe("Fastify integration", () => {
       "operation_id",
       "status",
       "duration_ms",
-      "remote_ip",
+      "peer_ip",
       "user_agent",
       "httpRequest",
       "release_channel",
@@ -873,7 +1002,7 @@ describe("Fastify integration", () => {
     ).toBe(false);
   });
 
-  it("contains remote IP resolution failures", async () => {
+  it("uses the direct socket peer without consulting Fastify trust-proxy resolution", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const stream = new JsonLineStream();
     const app = Fastify({
@@ -886,15 +1015,15 @@ describe("Fastify integration", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     apps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePeerIp: true });
     app.get("/", () => ({ ok: true }));
 
     const request = { url: "/", headers: { "x-forwarded-for": "203.0.113.10" } };
     expect((await app.inject(request)).statusCode).toBe(200);
     expect((await app.inject(request)).statusCode).toBe(200);
     expect(accessRecords(stream.records)).toHaveLength(2);
-    expect(accessRecords(stream.records).every((record) => record["remote_ip"] === undefined)).toBe(true);
-    expect(diagnosticKinds(stream.records)).toEqual(["remote_ip"]);
+    expect(accessRecords(stream.records).every((record) => record["peer_ip"] === "127.0.0.1")).toBe(true);
+    expect(diagnosticKinds(stream.records)).toEqual([]);
     expect(stderr).not.toHaveBeenCalled();
   });
 
@@ -1165,6 +1294,11 @@ describe("Fastify integration", () => {
     ["an unsupported key", { unsupported: true }, 'unsupported fastify-observability option "unsupported"'],
     ["an empty message", { message: "" }, "message must be a non-empty string"],
     ["a blank message", { message: " \t " }, "message must be a non-empty string"],
+    ["a non-boolean path capture", { capturePath: 1 }, "capturePath must be a boolean"],
+    ["a non-boolean peer capture", { capturePeerIp: 1 }, "capturePeerIp must be a boolean"],
+    ["a non-boolean user-agent capture", { captureUserAgent: 1 }, "captureUserAgent must be a boolean"],
+    ["an unsupported trace context level", { traceContextLevel: 3 }, "traceContextLevel must be 1 or 2"],
+    ["a non-function clock", { clock: 1 }, "clock must be a function"],
     ["an invalid request-ID header", { requestIdHeader: "bad header" }, "requestIdHeader must be a valid HTTP header"],
     [
       "colliding input headers",

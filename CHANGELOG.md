@@ -7,6 +7,35 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Added specification-defined GCP profile `0.1.0`, newest-installed resolution,
+  exact pinning through `gcpProfileVersion`, and safe effective-profile
+  introspection through `getObservabilityLoggerProfile()`.
+- Added independent `capturePath`, `capturePeerIp`, and `captureUserAgent`
+  opt-ins plus an injectable monotonic `clock` for deterministic tests.
+- Added explicit W3C Trace Context Level 2 configuration, including its
+  `tracestate` key grammar and `trace_id_random` projection. Level 1 remains the
+  default.
+
+### Changed
+
+- Disabled concrete path, direct peer IP, and User-Agent capture by default;
+  renamed the opt-in portable peer field from `remote_ip` to `peer_ip`, and
+  made the matching GCP request members conditional on those opt-ins.
+- Aligned the GCP health integration fixture with service version `1.0.0`,
+  operation ID `health_check`, and deterministic `12.5` ms output.
+- Canonicalized retained `tracestate` field-lines while preserving raw wire
+  order and valid empty members.
+- Treated dash-delimited future-version `traceparent` suffixes as opaque while
+  retaining strict validation of the common 55-character prefix.
+- Standardized observable terminal reasons as `client_disconnect`,
+  `body_error`, and `timeout`, and made every abnormal access record use
+  `error` while retaining the one-shot lifecycle guard.
+- **Breaking:** Canonicalized Fastify `:name` and `*` route metadata to portable
+  `{name}` and `{*path}` templates; ambiguous optional/composite forms are
+  omitted.
+
 ## [1.0.1] - 2026-07-17
 
 ### Added

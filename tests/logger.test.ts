@@ -3,7 +3,11 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify, { type FastifyInstance, LogController } from "fastify";
-import fastifyObservability, { createObservabilityLogger, createRequestIdGenerator } from "fastify-observability";
+import fastifyObservability, {
+  createObservabilityLogger,
+  createRequestIdGenerator,
+  getObservabilityLoggerProfile,
+} from "fastify-observability";
 import pino from "pino";
 import { describe, expect, it } from "vitest";
 import { JsonLineStream, topLevelKeyOccurrences } from "./helpers.js";
@@ -252,6 +256,7 @@ describe("canonical Pino logger", () => {
     "parent_id",
     "trace_flags",
     "trace_sampled",
+    "trace_id_random",
     "logging.googleapis.com/trace",
     "logging.googleapis.com/trace_sampled",
     "logging.googleapis.com/spanId",
@@ -264,6 +269,7 @@ describe("canonical Pino logger", () => {
     "operation_id",
     "status",
     "duration_ms",
+    "peer_ip",
     "remote_ip",
     "user_agent",
     "terminal_reason",
@@ -391,10 +397,38 @@ describe("canonical Pino logger", () => {
     expect(stream.records[0]).toMatchObject({ severity, message: "mapped" });
   });
 
+  it("resolves the newest installed GCP profile, preserves an exact pin, and exposes it safely", () => {
+    const latest = createObservabilityLogger({ preset: "gcp", destination: new JsonLineStream() });
+    const pinned = createObservabilityLogger({
+      preset: "gcp",
+      gcpProfileVersion: "0.1.0",
+      destination: new JsonLineStream(),
+    });
+
+    expect(getObservabilityLoggerProfile(latest)).toEqual({ preset: "gcp", gcpProfileVersion: "0.1.0" });
+    expect(getObservabilityLoggerProfile(pinned)).toEqual({ preset: "gcp", gcpProfileVersion: "0.1.0" });
+    expect(Object.isFrozen(getObservabilityLoggerProfile(latest))).toBe(true);
+    expect(getObservabilityLoggerProfile(latest.child({ component: "health" }))).toBe(
+      getObservabilityLoggerProfile(latest),
+    );
+    expect(getObservabilityLoggerProfile(createObservabilityLogger())).toEqual({ preset: "default" });
+    expect(() => getObservabilityLoggerProfile({})).toThrow("not a fastify-observability canonical logger");
+  });
+
   it.each([
     ["null options", null, "logger options must be a record"],
     ["an options array", [], "logger options must be a record"],
     ["an unknown preset", { preset: "unknown" }, "logger preset must be default, gcp, aws, or azure"],
+    [
+      "an unsupported GCP profile pin",
+      { preset: "gcp", gcpProfileVersion: "0.2.0" },
+      "unsupported GCP profile version; expected 0.1.0",
+    ],
+    [
+      "a GCP profile pin without GCP selection",
+      { preset: "default", gcpProfileVersion: "0.1.0" },
+      'gcpProfileVersion requires preset "gcp"',
+    ],
     ["a nonstandard level", { level: "verbose" }, "logger level must be a standard Pino level"],
     ["an array base", { base: [] }, "logger base must be a record or null"],
     ["a non-stream destination", { destination: {} }, "logger destination must provide write(message)"],

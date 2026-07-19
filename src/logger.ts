@@ -7,11 +7,20 @@ import pino, {
   type Logger,
   type LoggerOptions,
 } from "pino";
-import type { LoggingPreset } from "./types.js";
+import type { GcpProfileVersion, LoggingPreset } from "./types.js";
 
 const PRESETS = new Set<LoggingPreset>(["default", "gcp", "aws", "azure"]);
 const LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal", "silent"]);
-const LOGGER_OPTION_KEYS = new Set(["preset", "level", "base", "redact", "serializers", "transport", "destination"]);
+const LOGGER_OPTION_KEYS = new Set([
+  "preset",
+  "gcpProfileVersion",
+  "level",
+  "base",
+  "redact",
+  "serializers",
+  "transport",
+  "destination",
+]);
 const CHILD_OPTION_KEYS = new Set(["level", "serializers"]);
 const FASTIFY_UNSET_CHILD_OPTIONS = new Set(["logger", "genReqId"]);
 const PINO_IGNORED_BINDINGS = new Set(["serializers", "formatters", "customLevels"]);
@@ -55,6 +64,7 @@ export const PROTECTED_LOG_FIELDS = new Set([
   "parent_id",
   "trace_flags",
   "trace_sampled",
+  "trace_id_random",
   "logging.googleapis.com/trace",
   "logging.googleapis.com/trace_sampled",
   "logging.googleapis.com/spanId",
@@ -67,6 +77,7 @@ export const PROTECTED_LOG_FIELDS = new Set([
   "operation_id",
   "status",
   "duration_ms",
+  "peer_ip",
   "remote_ip",
   "user_agent",
   "terminal_reason",
@@ -76,6 +87,7 @@ export const PROTECTED_LOG_FIELDS = new Set([
 
 export interface ObservabilityLoggerOptions {
   preset?: LoggingPreset;
+  gcpProfileVersion?: GcpProfileVersion;
   level?: LevelWithSilent;
   base?: LoggerOptions["base"];
   redact?: LoggerOptions["redact"];
@@ -89,19 +101,20 @@ export type ObservabilityLogger = Omit<Logger, "child" | "level" | "onChild" | "
   child(bindings: Bindings, options?: ChildLoggerOptions): ObservabilityLogger;
 };
 
-export interface CanonicalLoggerProfile {
+export interface ObservabilityLoggerProfile {
   readonly preset: LoggingPreset;
+  readonly gcpProfileVersion?: GcpProfileVersion;
 }
 
 type NativeChild = (bindings: Bindings, options?: ChildLoggerOptions) => Logger;
 
-const profiles = new WeakMap<object, CanonicalLoggerProfile>();
+const profiles = new WeakMap<object, ObservabilityLoggerProfile>();
 
 export function bindingValuesEqual(left: unknown, right: unknown): boolean {
   return Object.is(left, right) || isDeepStrictEqual(left, right);
 }
 
-function validateOptions(options: ObservabilityLoggerOptions): CanonicalLoggerProfile {
+function validateOptions(options: ObservabilityLoggerOptions): ObservabilityLoggerProfile {
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("logger options must be a record");
   }
@@ -113,6 +126,14 @@ function validateOptions(options: ObservabilityLoggerOptions): CanonicalLoggerPr
   const preset = options.preset ?? "default";
   if (!PRESETS.has(preset)) {
     throw new TypeError("logger preset must be default, gcp, aws, or azure");
+  }
+  if (preset === "gcp") {
+    const version = options.gcpProfileVersion ?? "0.1.0";
+    if (version !== "0.1.0") {
+      throw new TypeError("unsupported GCP profile version; expected 0.1.0");
+    }
+  } else if (options.gcpProfileVersion !== undefined) {
+    throw new TypeError('gcpProfileVersion requires preset "gcp"');
   }
   if (options.level !== undefined && (typeof options.level !== "string" || !LEVELS.has(options.level))) {
     throw new TypeError("logger level must be a standard Pino level");
@@ -133,10 +154,12 @@ function validateOptions(options: ObservabilityLoggerOptions): CanonicalLoggerPr
   ) {
     throw new TypeError("logger destination must provide write(message)");
   }
-  return Object.freeze({ preset });
+  return Object.freeze(
+    preset === "gcp" ? { preset, gcpProfileVersion: options.gcpProfileVersion ?? "0.1.0" } : { preset },
+  );
 }
 
-function validateTransport(profile: CanonicalLoggerProfile, transport: LoggerOptions["transport"]): void {
+function validateTransport(profile: ObservabilityLoggerProfile, transport: LoggerOptions["transport"]): void {
   if (profile.preset !== "gcp" || transport === undefined) {
     return;
   }
@@ -165,7 +188,7 @@ interface RedactionTarget {
   readonly nested: boolean;
 }
 
-const DIRECTLY_REDACTABLE_PACKAGE_FIELDS = new Set(["path", "remote_ip", "user_agent"]);
+const DIRECTLY_REDACTABLE_PACKAGE_FIELDS = new Set(["path", "peer_ip", "remote_ip", "user_agent"]);
 const NESTED_REDACTABLE_PACKAGE_FIELDS = new Set(["err", "httpRequest"]);
 const REDACTION_PATH_SEGMENT = /[^.[\]]+|\[([^[]\]]*?)\]/;
 
@@ -318,7 +341,7 @@ function freezeEffectiveSerializers(logger: Logger): void {
 
 function registerLogger(
   logger: Logger,
-  profile: CanonicalLoggerProfile,
+  profile: ObservabilityLoggerProfile,
   nativeChild: NativeChild,
   onChild: (child: Logger) => void,
 ): void {
@@ -355,8 +378,16 @@ function registerLogger(
   });
 }
 
-export function canonicalLoggerProfile(logger: object): CanonicalLoggerProfile | undefined {
+export function canonicalLoggerProfile(logger: object): ObservabilityLoggerProfile | undefined {
   return profiles.get(logger);
+}
+
+export function getObservabilityLoggerProfile(logger: object): ObservabilityLoggerProfile {
+  const profile = profiles.get(logger);
+  if (profile === undefined) {
+    throw new TypeError("logger is not a fastify-observability canonical logger");
+  }
+  return profile;
 }
 
 export function createCanonicalChild(logger: Logger, bindings: Bindings): Logger {

@@ -1,4 +1,4 @@
-import { parseTraceparent } from "fastify-observability";
+import { parseTraceparent, resolveTraceContextLevel } from "fastify-observability";
 import { describe, expect, it } from "vitest";
 import { attachTracestate } from "../src/trace.js";
 
@@ -6,6 +6,15 @@ const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const PARENT_ID = "00f067aa0ba902b7";
 
 describe("traceparent", () => {
+  it("defaults to Level 1 and rejects unsupported levels", () => {
+    expect(resolveTraceContextLevel()).toBe(1);
+    expect(resolveTraceContextLevel(1)).toBe(1);
+    expect(resolveTraceContextLevel(2)).toBe(2);
+    for (const value of [0, 3, "2", true, null]) {
+      expect(() => resolveTraceContextLevel(value)).toThrow("traceContextLevel must be 1 or 2");
+    }
+  });
+
   it("parses v00 and derives sampled from bit zero", () => {
     const trace = parseTraceparent(`00-${TRACE_ID}-${PARENT_ID}-03`);
     expect(trace).toEqual({
@@ -14,14 +23,31 @@ describe("traceparent", () => {
       flags: "03",
       sampled: true,
       traceparent: `00-${TRACE_ID}-${PARENT_ID}-03`,
+      traceContextLevel: 1,
     });
     expect(Object.isFrozen(trace)).toBe(true);
     expect(parseTraceparent(`00-${TRACE_ID}-${PARENT_ID}-02`)?.sampled).toBe(false);
+    expect(parseTraceparent(`00-${TRACE_ID}-${PARENT_ID}-02`)?.traceIdRandom).toBeUndefined();
+  });
+
+  it.each([
+    ["00", false, false],
+    ["01", true, false],
+    ["02", false, true],
+    ["03", true, true],
+    ["04", false, false],
+    ["0a", false, true],
+    ["20", false, false],
+  ] as const)("projects Level 2 flags %s", (flags, sampled, random) => {
+    const trace = parseTraceparent(`00-${TRACE_ID}-${PARENT_ID}-${flags}`, 2);
+    expect(trace).toMatchObject({ flags, sampled, traceContextLevel: 2, traceIdRandom: random });
   });
 
   it("accepts future framing up to the wire-length boundary", () => {
     expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01`)).not.toBeNull();
     expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01-extra`)).not.toBeNull();
+    expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01-opaque-ümlaut`)).not.toBeNull();
+    expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01-\u001f`)).not.toBeNull();
     const maximum = `01-${TRACE_ID}-${PARENT_ID}-01-${"x".repeat(456)}`;
     expect(maximum).toHaveLength(512);
     expect(parseTraceparent(maximum)).not.toBeNull();
@@ -46,7 +72,6 @@ describe("traceparent", () => {
     ["an all-zero trace ID", `00-${"0".repeat(32)}-${PARENT_ID}-01`],
     ["an all-zero parent ID", `00-${TRACE_ID}-${"0".repeat(16)}-01`],
     ["future data without its separator", `01-${TRACE_ID}-${PARENT_ID}-01x`],
-    ["a control character in future data", `01-${TRACE_ID}-${PARENT_ID}-01-\u001f`],
   ])("rejects %s", (_name, value) => {
     expect(parseTraceparent(value)).toBeNull();
   });
@@ -62,6 +87,11 @@ describe("tracestate", () => {
     const result = attachTracestate(trace, ["vendor=one", "1tenant@system=value"]);
     expect(result.tracestate).toBe("vendor=one,1tenant@system=value");
     expect(Object.isFrozen(result)).toBe(true);
+  });
+
+  it("distinguishes a missing tracestate from one empty field-line", () => {
+    expect(attachTracestate(trace, [])).toBe(trace);
+    expect(attachTracestate(trace, [""])).toEqual({ ...trace, tracestate: "" });
   });
 
   it.each([
@@ -81,7 +111,13 @@ describe("tracestate", () => {
   });
 
   it("accepts optional whitespace and empty list members", () => {
-    expect(attachTracestate(trace, [" , a=1, "]).tracestate).toBe(" , a=1, ");
+    expect(attachTracestate(trace, [" , a=1, "]).tracestate).toBe(",a=1,");
+  });
+
+  it("canonicalizes split field-lines and separator whitespace", () => {
+    expect(attachTracestate(trace, ["  vendor1=value1  ", "\tvendor2= value2\t"]).tracestate).toBe(
+      "vendor1=value1,vendor2= value2",
+    );
   });
 
   it("enforces the exact member, value, and total-length boundaries", () => {
@@ -110,5 +146,20 @@ describe("tracestate", () => {
     expect(attachTracestate(trace, [`${maximumMultiTenantKey}=1`]).tracestate).toBe(`${maximumMultiTenantKey}=1`);
     expect(attachTracestate(trace, [`${maximumTenant}x@${maximumSystem}=1`])).toBe(trace);
     expect(attachTracestate(trace, [`${maximumTenant}@${maximumSystem}y=1`])).toBe(trace);
+  });
+
+  it("uses the Level 2 key grammar selected by the trace context", () => {
+    const level2 = parseTraceparent(`00-${TRACE_ID}-${PARENT_ID}-03`, 2);
+    if (level2 === null) {
+      throw new Error("test trace must parse");
+    }
+    expect(attachTracestate(level2, ["1=value"]).tracestate).toBe("1=value");
+    expect(attachTracestate(level2, ["tenant@sub@system=value"]).tracestate).toBe("tenant@sub@system=value");
+    for (const value of ["@vendor=value", "Vendor=value", "vendor=first,vendor=second"]) {
+      expect(attachTracestate(level2, [value])).toBe(level2);
+    }
+    expect(attachTracestate(level2, ["vendor=value \t, \t1@two= leading\t"]).tracestate).toBe(
+      "vendor=value,1@two= leading",
+    );
   });
 });
