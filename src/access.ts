@@ -90,7 +90,7 @@ export function canonicalRouteTemplate(nativeTemplate: string): string | undefin
   if (nativeTemplate === "*") {
     return "/{*path}";
   }
-  if (!nativeTemplate.startsWith("/") || nativeTemplate.includes("?") || nativeTemplate.includes("#")) {
+  if (!nativeTemplate.startsWith("/") || nativeTemplate.includes("#")) {
     return undefined;
   }
   const canonical: string[] = [];
@@ -104,19 +104,70 @@ export function canonicalRouteTemplate(nativeTemplate: string): string | undefin
       continue;
     }
     if (segment.startsWith(":")) {
-      const match = /^:([A-Za-z_][A-Za-z0-9_]{0,63})(?:\([^/?]+\))?$/.exec(segment);
-      if (match?.[1] === undefined || !ROUTE_PARAMETER.test(match[1])) {
+      const match = /^:([A-Za-z_][A-Za-z0-9_]{0,63})(.*)$/.exec(segment);
+      const name = match?.[1];
+      const constraint = match?.[2] ?? "";
+      if (name === undefined || !ROUTE_PARAMETER.test(name) || (constraint !== "" && !isRouteConstraint(constraint))) {
         return undefined;
       }
-      canonical.push(`{${match[1]}}`);
+      canonical.push(`{${name}}`);
       continue;
     }
-    if (segment.includes(":") || segment.includes("*") || segment.includes("{") || segment.includes("}")) {
+    if (
+      segment.includes(":") ||
+      segment.includes("*") ||
+      segment.includes("{") ||
+      segment.includes("}") ||
+      segment.includes("?")
+    ) {
       return undefined;
     }
     canonical.push(segment);
   }
   return `/${canonical.join("/")}`;
+}
+
+function isRouteConstraint(value: string): boolean {
+  if (!value.startsWith("(") || !value.endsWith(")")) {
+    return false;
+  }
+  let depth = 0;
+  let escaped = false;
+  let inCharacterClass = false;
+  const characters = [...value];
+  for (const [index, character] of characters.entries()) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (character === "[" && !inCharacterClass) {
+      inCharacterClass = true;
+      continue;
+    }
+    if (character === "]" && inCharacterClass) {
+      inCharacterClass = false;
+      continue;
+    }
+    if (inCharacterClass) {
+      continue;
+    }
+    if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth === 0 && index !== characters.length - 1) {
+        return false;
+      }
+      if (depth < 0) {
+        return false;
+      }
+    }
+  }
+  return depth === 0 && !escaped && !inCharacterClass;
 }
 
 function operationId(request: FastifyRequest): string | undefined {

@@ -7,6 +7,26 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+The changes in this section target `2.0.0` and must not be published on the
+`1.x` release line.
+
+### Migration from 1.x
+
+- Replace custom terminal `message` values with the fixed
+  `"request completed"` message and move application-specific text to separate
+  application log events.
+- Enable `capturePath`, `capturePeerIp`, `captureUserAgent`, and `captureError`
+  explicitly where the corresponding data is still required. These fields are
+  privacy-sensitive and are disabled by default.
+- Rename consumers of `remote_ip` to `peer_ip`. The new field uses only the
+  direct socket peer and does not trust proxy-derived addresses.
+- Update abnormal-outcome queries from `request_aborted` and
+  `response_aborted` to `client_disconnect` and `body_error`; timeouts remain
+  `timeout`, and normal responses no longer need a terminal reason.
+- Treat abnormal terminal records as `ERROR`, opt into native `err` details
+  only when their privacy impact is acceptable, and update route dimensions to
+  the canonical `{name}` and `{*path}` template syntax.
+
 ### Added
 
 - Added specification-defined GCP profile `0.1.0`, newest-installed resolution,
@@ -43,6 +63,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 - Enforced the `traceparent` input ceiling in UTF-8 bytes and retained an
   authoritative committed response status when a timeout terminates the body.
+- Preserved sampling while omitting the Level 2 random flag for unknown future
+  `traceparent` versions.
+- Retained canonical `path_template` output for valid whole-segment Fastify
+  constraints containing nested or noncapturing regular-expression groups.
 
 ## [1.0.1] - 2026-07-17
 

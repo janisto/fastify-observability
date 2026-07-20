@@ -637,16 +637,19 @@ describe("Fastify integration", () => {
     const { app, records } = await buildTestApp();
     apps.push(app);
     app.get("/items/:item_id", { schema: { operationId: "get_item" } as never }, () => ({ ok: true }));
+    app.get("/choice/:id((?:foo|bar))", { schema: { operationId: "get_choice" } as never }, () => ({ ok: true }));
     app.get("/files/*", { schema: { operationId: "get_file" } as never }, () => ({ ok: true }));
 
     expect((await app.inject("/items/tenant-a")).statusCode).toBe(200);
     expect((await app.inject("/items/tenant-b")).statusCode).toBe(200);
+    expect((await app.inject("/choice/foo")).statusCode).toBe(200);
     expect((await app.inject("/files/tenant-a/one")).statusCode).toBe(200);
     expect((await app.inject("/files/tenant-b/two")).statusCode).toBe(200);
 
     expect(accessRecords(records).map(({ path_template, operation_id }) => ({ path_template, operation_id }))).toEqual([
       { path_template: "/items/{item_id}", operation_id: "get_item" },
       { path_template: "/items/{item_id}", operation_id: "get_item" },
+      { path_template: "/choice/{id}", operation_id: "get_choice" },
       { path_template: "/files/{*path}", operation_id: "get_file" },
       { path_template: "/files/{*path}", operation_id: "get_file" },
     ]);

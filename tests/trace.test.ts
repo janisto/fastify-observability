@@ -54,6 +54,15 @@ describe("traceparent", () => {
     expect(parseTraceparent(`${maximum}x`)).toBeNull();
   });
 
+  it.each([
+    ["02", false],
+    ["03", true],
+  ] as const)("does not assign Level 2 random semantics to future-version flags %s", (flags, sampled) => {
+    const trace = parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-${flags}-opaque`, 2);
+    expect(trace).toMatchObject({ flags, sampled, traceContextLevel: 2 });
+    expect(trace?.traceIdRandom).toBeUndefined();
+  });
+
   it("enforces the future-version limit in UTF-8 bytes", () => {
     const maximum = `01-${TRACE_ID}-${PARENT_ID}-01-${"é".repeat(228)}`;
     expect(maximum).toHaveLength(284);

@@ -18,9 +18,12 @@ describe("access helpers", () => {
     ["/health", "/health"],
     ["/items/:item_id", "/items/{item_id}"],
     ["/items/:item_id(\\d+)", "/items/{item_id}"],
+    ["/choice/:id((?:foo|bar))", "/choice/{id}"],
+    ["/choice/:id([()a-z]+)", "/choice/{id}"],
     ["/files/*", "/files/{*path}"],
     ["*", "/{*path}"],
     ["/items/:item_id?", undefined],
+    ["/items/:item_id(foo)tail", undefined],
     ["/items/:item_id.:format", undefined],
     ["/files/*/suffix", undefined],
   ])("canonicalizes the current Fastify route form %s", (input, expected) => {

@@ -53,7 +53,7 @@ export function parseTraceparent(value: unknown, traceContextLevel: TraceContext
     sampled: (Number.parseInt(flags, 16) & 1) === 1,
     traceparent: value,
     traceContextLevel: resolvedLevel,
-    ...(resolvedLevel === 2 ? { traceIdRandom: (Number.parseInt(flags, 16) & 2) === 2 } : {}),
+    ...(resolvedLevel === 2 && version === "00" ? { traceIdRandom: (Number.parseInt(flags, 16) & 2) === 2 } : {}),
   });
 }
 

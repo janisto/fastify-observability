@@ -244,10 +244,11 @@ await app.register(fastifyObservability, { traceContextLevel: 2 });
 ```
 
 Both levels preserve `trace_flags` and derive `trace_sampled` from bit zero.
-Level 2 additionally exposes `traceIdRandom` on the request trace context and
-emits `trace_id_random` from bit one. Level 1 deliberately omits the random
-field. The flag reports caller input; it does not prove that this application
-generated a random trace ID.
+For version `00`, Level 2 additionally exposes `traceIdRandom` on the request
+trace context and emits `trace_id_random` from bit one. Level 1 deliberately
+omits the random field. Higher versions retain the sampled bit but do not assign
+meaning to the random bit. The flag reports caller input; it does not prove that
+this application generated a random trace ID.
 
 The incoming parent ID identifies the caller's span. The package does not claim
 that it is a span created by this service and does not emit a fake current-span
@@ -422,6 +423,9 @@ behavior, structured fields, defaults, and supported runtime versions are
 compatibility contracts. Breaking changes require a new major release and
 migration guidance in [CHANGELOG.md](CHANGELOG.md). Deep imports are
 unsupported.
+
+The current Unreleased contract changes are reserved for `2.0.0`; see the
+changelog migration section before upgrading a 1.x application.
 
 Development requires [pnpm 11.13.0](https://pnpm.io/installation), pinned by
 the `packageManager` field, and [just](https://github.com/casey/just). With both
