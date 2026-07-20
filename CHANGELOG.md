@@ -46,6 +46,8 @@ The changes in this section target `2.0.0` and must not be published on the
   options now fail construction like every other unsupported key.
 - Set package metadata to `2.0.0` so local package validation cannot produce a
   breaking artifact mislabeled for the v1 release line.
+- Documented LF-terminated NDJSON as the logging boundary and added raw-writer
+  regression coverage for independently parseable records.
 
 - Omit unavailable, malformed, and non-origin-form request paths; canonicalize
   direct peer IP literals; and distinguish response-stream failures from

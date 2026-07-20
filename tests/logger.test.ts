@@ -2,6 +2,7 @@ import { type EventEmitter, once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Writable } from "node:stream";
 import Fastify, { type FastifyInstance, LogController } from "fastify";
 import fastifyObservability, {
   createObservabilityLogger,
@@ -21,6 +22,33 @@ function requiredFastifyOptions() {
 }
 
 describe("canonical Pino logger", () => {
+  it("writes each event as one LF-terminated NDJSON object", () => {
+    const writes: string[] = [];
+    const destination = new Writable({
+      write(chunk, _encoding, callback) {
+        writes.push(chunk.toString());
+        callback();
+      },
+    });
+    const logger = createObservabilityLogger({ destination });
+
+    logger.info("first\nlogical message");
+    logger.error("second message");
+
+    expect(writes).toHaveLength(2);
+    const messages = writes.map((write) => {
+      expect(write.endsWith("\n")).toBe(true);
+      expect(write).not.toContain("\r");
+      const line = write.slice(0, -1);
+      expect(line).not.toContain("\n");
+      const record = JSON.parse(line) as unknown;
+      expect(record).toBeTypeOf("object");
+      expect(Array.isArray(record)).toBe(false);
+      return (record as { message: string }).message;
+    });
+    expect(messages).toEqual(["first\nlogical message", "second message"]);
+  });
+
   it("owns the envelope and preserves nested bindings without duplicate top-level names", () => {
     const stream = new JsonLineStream();
     const logger = createObservabilityLogger({

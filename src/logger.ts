@@ -402,6 +402,7 @@ export function createCanonicalChild(logger: Logger, bindings: Bindings): Logger
   return child;
 }
 
+/** Creates a Pino logger that writes one compact JSON object plus LF per event. */
 export function createObservabilityLogger(options: ObservabilityLoggerOptions = {}): ObservabilityLogger {
   const profile = validateOptions(options);
   validateTransport(profile, options.transport);
