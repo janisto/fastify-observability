@@ -187,7 +187,6 @@ plugin options, so the logger envelope and provider fields cannot drift apart.
 | `traceHeader` | `"traceparent"` | W3C trace context header |
 | `tracestateHeader` | `"tracestate"` | W3C vendor trace state header |
 | `traceContextLevel` | `1` | Pinned W3C grammar and flag semantics; `1` or explicit `2` |
-| `message` | `"request completed"` | Compatibility option; any other value is rejected because the terminal message is fixed |
 | `capturePath` | `false` | Include a valid query-free origin-form path and GCP `requestUrl`; omit unavailable or malformed targets |
 | `capturePeerIp` | `false` | Include the canonical direct socket IP as `peer_ip` and GCP `remoteIp`; omit non-IP or zoned values |
 | `captureUserAgent` | `false` | Include one unambiguous User-Agent and GCP `userAgent` |
@@ -426,6 +425,8 @@ unsupported.
 
 The current Unreleased contract changes are reserved for `2.0.0`; see the
 changelog migration section before upgrading a 1.x application.
+Version 2 exposes no v1 option aliases or compatibility shims; applications
+must migrate to the documented v2 configuration surface.
 
 Development requires [pnpm 11.13.0](https://pnpm.io/installation), pinned by
 the `packageManager` field, and [just](https://github.com/casey/just). With both

@@ -12,7 +12,7 @@ export interface TraceContext {
   readonly sampled: boolean;
   readonly traceparent: string;
   readonly tracestate?: string;
-  readonly traceContextLevel?: TraceContextLevel;
+  readonly traceContextLevel: TraceContextLevel;
   readonly traceIdRandom?: boolean;
 }
 
@@ -31,7 +31,6 @@ export interface FastifyObservabilityOptions {
   traceHeader?: string;
   tracestateHeader?: string;
   traceContextLevel?: TraceContextLevel;
-  message?: "request completed";
   capturePath?: boolean;
   capturePeerIp?: boolean;
   captureUserAgent?: boolean;

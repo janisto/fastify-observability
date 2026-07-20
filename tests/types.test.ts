@@ -31,6 +31,7 @@ describe("public types", () => {
     expectTypeOf<import("fastify-observability").FastifyObservabilityOptions["traceContextLevel"]>().toEqualTypeOf<
       TraceContextLevel | undefined
     >();
+    expectTypeOf<TraceContext["traceContextLevel"]>().toEqualTypeOf<TraceContextLevel>();
     expectTypeOf<ObservabilityLoggerOptions["preset"]>().toEqualTypeOf<LoggingPreset | undefined>();
     expectTypeOf<ObservabilityLoggerOptions["gcpProfileVersion"]>().toEqualTypeOf<GcpProfileVersion | undefined>();
     expectTypeOf<ObservabilityLoggerOptions["level"]>().toEqualTypeOf<
@@ -91,6 +92,7 @@ describe("public types", () => {
       const logger = createObservabilityLogger();
       // @ts-expect-error createObservabilityLogger owns the Pino message key
       createObservabilityLogger({ messageKey: "msg" });
+
       // @ts-expect-error canonical logger bindings are immutable
       logger.setBindings({ component: "changed" });
       // @ts-expect-error the package owns Pino's child-registration callback
@@ -99,6 +101,8 @@ describe("public types", () => {
       logger.level = "verbose";
       // @ts-expect-error preset selection belongs to createObservabilityLogger, not plugin options
       app.register(plugin, { preset: "gcp" });
+      // @ts-expect-error v2 owns the terminal message and has no v1 message option
+      app.register(plugin, { message: "request completed" });
       // @ts-expect-error extraFields is deliberately synchronous
       app.register(plugin, { extraFields: async () => ({ component: "catalog" }) });
     };

@@ -12,9 +12,11 @@ The changes in this section target `2.0.0` and must not be published on the
 
 ### Migration from 1.x
 
-- Replace custom terminal `message` values with the fixed
-  `"request completed"` message and move application-specific text to separate
+- Remove the v1 terminal `message` option. Version 2 always emits
+  `"request completed"`; move application-specific text to separate
   application log events.
+- Provide `traceContextLevel` on every manually constructed `TraceContext`;
+  version 2 rejects the v1 shape that omitted it instead of assuming Level 1.
 - Enable `capturePath`, `capturePeerIp`, `captureUserAgent`, and `captureError`
   explicitly where the corresponding data is still required. These fields are
   privacy-sensitive and are disabled by default.
@@ -39,6 +41,11 @@ The changes in this section target `2.0.0` and must not be published on the
   default.
 
 ### Changed
+
+- Removed v1 compatibility shims from the plugin options; unknown legacy
+  options now fail construction like every other unsupported key.
+- Set package metadata to `2.0.0` so local package validation cannot produce a
+  breaking artifact mislabeled for the v1 release line.
 
 - Omit unavailable, malformed, and non-origin-form request paths; canonicalize
   direct peer IP literals; and distinguish response-stream failures from

@@ -1276,7 +1276,11 @@ describe("Fastify integration", () => {
   it.each([
     ["an options array", [], "plugin options must be a record"],
     ["an unsupported key", { unsupported: true }, 'unsupported fastify-observability option "unsupported"'],
-    ["a noncanonical message", { message: "HTTP request finished" }, 'message must be exactly "request completed"'],
+    [
+      "the removed v1 message option",
+      { message: "request completed" },
+      'unsupported fastify-observability option "message"',
+    ],
     ["a non-boolean path capture", { capturePath: 1 }, "capturePath must be a boolean"],
     ["a non-boolean peer capture", { capturePeerIp: 1 }, "capturePeerIp must be a boolean"],
     ["a non-boolean user-agent capture", { captureUserAgent: 1 }, "captureUserAgent must be a boolean"],

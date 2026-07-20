@@ -32,7 +32,6 @@ const OPTION_KEYS = new Set([
   "traceHeader",
   "tracestateHeader",
   "traceContextLevel",
-  "message",
   "capturePath",
   "capturePeerIp",
   "captureUserAgent",
@@ -71,9 +70,6 @@ export function normalizeOptions(options: FastifyObservabilityOptions, preset: L
   }
   if (responseHeader !== false && (responseHeader === traceHeader || responseHeader === tracestateHeader)) {
     throw new TypeError("responseHeader must not collide with trace headers");
-  }
-  if (options.message !== undefined && options.message !== "request completed") {
-    throw new TypeError('message must be exactly "request completed"');
   }
   if (options.clock !== undefined && typeof options.clock !== "function") {
     throw new TypeError("clock must be a function");

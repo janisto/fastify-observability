@@ -1,6 +1,6 @@
 {
   "name": "fastify-observability",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "Fastify middleware for request IDs, trace correlation, and structured access logs.",
   "keywords": [
     "fastify",

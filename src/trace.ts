@@ -147,6 +147,9 @@ export function attachTracestate(trace: TraceContext, values: readonly string[])
   ) {
     return trace;
   }
-  const canonical = canonicalTracestate(tracestate, trace.traceContextLevel ?? 1);
+  if (trace.traceContextLevel === undefined) {
+    throw new TypeError("traceContextLevel must be 1 or 2");
+  }
+  const canonical = canonicalTracestate(tracestate, resolveTraceContextLevel(trace.traceContextLevel));
   return canonical === null ? trace : Object.freeze({ ...trace, tracestate: canonical });
 }

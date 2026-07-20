@@ -1,4 +1,4 @@
-import { parseTraceparent, resolveTraceContextLevel } from "fastify-observability";
+import { parseTraceparent, resolveTraceContextLevel, type TraceContext } from "fastify-observability";
 import { describe, expect, it } from "vitest";
 import { attachTracestate } from "../src/trace.js";
 
@@ -110,6 +110,14 @@ describe("tracestate", () => {
   it("distinguishes a missing tracestate from one empty field-line", () => {
     expect(attachTracestate(trace, [])).toBe(trace);
     expect(attachTracestate(trace, [""])).toEqual({ ...trace, tracestate: "" });
+  });
+
+  it("rejects a removed v1 trace context without an explicit grammar level", () => {
+    const { traceContextLevel: _removed, ...v1Trace } = trace;
+
+    expect(() => attachTracestate(v1Trace as TraceContext, ["vendor=value"])).toThrow(
+      "traceContextLevel must be 1 or 2",
+    );
   });
 
   it.each([
