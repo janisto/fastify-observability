@@ -105,11 +105,21 @@ import fastifyObservability, {
   createRequestIdGenerator,
   type ObservabilityLogger,
   type RequestObservability,
+	type TraceContext,
   type TraceContextLevel,
 } from "fastify-observability";
 
 const logger: ObservabilityLogger = createObservabilityLogger({ level: "silent" });
 const traceContextLevel: TraceContextLevel = 2;
+// @ts-expect-error v2 TraceContext requires the selected grammar level
+const removedV1TraceShape: TraceContext = {
+  traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+  parentId: "00f067aa0ba902b7",
+  flags: "01",
+  sampled: true,
+  traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+};
+void removedV1TraceShape;
 const child = logger.child({ component: "package-smoke" });
 // @ts-expect-error canonical logger binding mutation is blocked at runtime
 child.setBindings({ component: "changed" });

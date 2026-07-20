@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
-import { validateHeaderName } from "node:http";
+import { validateHeaderName, validateHeaderValue } from "node:http";
 import type { Http2ServerRequest } from "node:http2";
 import type { RequestIdGeneratorOptions } from "./types.js";
 
@@ -46,14 +46,16 @@ export function rawHeaderValues(request: RawRequest, headerName: string): string
 }
 
 function validIncomingRequestId(value: string, validateIncoming: ((value: string) => boolean) | undefined): boolean {
-  if (!isValidRequestId(value)) {
-    return false;
-  }
   if (validateIncoming === undefined) {
-    return true;
+    return isValidRequestId(value);
   }
   try {
-    return validateIncoming(value) === true;
+    validateHeaderValue("x-request-id", value);
+  } catch {
+    return false;
+  }
+  try {
+    return value.length > 0 && validateIncoming(value) === true;
   } catch {
     return false;
   }

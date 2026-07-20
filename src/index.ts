@@ -5,6 +5,8 @@ export { createRequestIdGenerator, isValidRequestId } from "./request-id.js";
 export { parseTraceparent, resolveTraceContextLevel } from "./trace.js";
 export type {
   AccessLogLevel,
+  AwsProfileVersion,
+  AzureProfileVersion,
   ExtraFields,
   FastifyObservabilityOptions,
   GcpProfileVersion,

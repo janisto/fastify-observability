@@ -513,13 +513,18 @@ describe("Fastify integration", () => {
 
     await pathOnly.app.inject({ url: "/private?secret=yes", headers: { "user-agent": "agent/1" } });
     await agentOnly.app.inject({ url: "/private?secret=yes", headers: { "user-agent": "agent/1" } });
+    await agentOnly.app.inject({ url: "/private", headers: { "user-agent": "agent\tcomment" } });
 
     const pathRecord = accessRecords(pathOnly.records)[0];
     expect(pathRecord).toMatchObject({ path: "/private", httpRequest: { requestUrl: "/private" } });
     expect(pathRecord).not.toHaveProperty("user_agent");
     expect(pathRecord?.["httpRequest"]).not.toHaveProperty("userAgent");
-    const agentRecord = accessRecords(agentOnly.records)[0];
+    const [agentRecord, tabAgentRecord] = accessRecords(agentOnly.records);
     expect(agentRecord).toMatchObject({ user_agent: "agent/1", httpRequest: { userAgent: "agent/1" } });
+    expect(tabAgentRecord).toMatchObject({
+      user_agent: "agent\tcomment",
+      httpRequest: { userAgent: "agent\tcomment" },
+    });
     expect(agentRecord).not.toHaveProperty("path");
     expect(agentRecord?.["httpRequest"]).not.toHaveProperty("requestUrl");
   });
@@ -640,12 +645,22 @@ describe("Fastify integration", () => {
     app.get("/items/:item_id", { schema: { operationId: "get_item" } as never }, () => ({ ok: true }));
     app.get(`/long/:${longName}`, { schema: { operationId: "get_long" } as never }, () => ({ ok: true }));
     app.get("/choice/:id((?:foo|bar))", { schema: { operationId: "get_choice" } as never }, () => ({ ok: true }));
+    app.get("/digit/:123", { schema: { operationId: "get_digit" } as never }, () => ({ ok: true }));
+    app.get("/unicode/:ümlaut", { schema: { operationId: "get_unicode" } as never }, () => ({ ok: true }));
+    app.get("/punctuation/:$id", { schema: { operationId: "get\tpunctuation" } as never }, () => ({ ok: true }));
+    app.get("/regex/:id(^foo\\/bar$)", { schema: { operationId: "get_regex" } as never }, () => ({ ok: true }));
+    app.get("/name::verb", { schema: { operationId: "get_literal_colon" } as never }, () => ({ ok: true }));
     app.get("/files/*", { schema: { operationId: "get_file" } as never }, () => ({ ok: true }));
 
     expect((await app.inject("/items/tenant-a")).statusCode).toBe(200);
     expect((await app.inject("/items/tenant-b")).statusCode).toBe(200);
     expect((await app.inject("/long/value")).statusCode).toBe(200);
     expect((await app.inject("/choice/foo")).statusCode).toBe(200);
+    expect((await app.inject("/digit/value")).statusCode).toBe(200);
+    expect((await app.inject("/unicode/value")).statusCode).toBe(200);
+    expect((await app.inject("/punctuation/value")).statusCode).toBe(200);
+    expect((await app.inject("/regex/foo%2Fbar")).statusCode).toBe(200);
+    expect((await app.inject("/name:verb")).statusCode).toBe(200);
     expect((await app.inject("/files/tenant-a/one")).statusCode).toBe(200);
     expect((await app.inject("/files/tenant-b/two")).statusCode).toBe(200);
 
@@ -654,6 +669,11 @@ describe("Fastify integration", () => {
       { path_template: "/items/{item_id}", operation_id: "get_item" },
       { path_template: `/long/{${longName}}`, operation_id: "get_long" },
       { path_template: "/choice/{id}", operation_id: "get_choice" },
+      { path_template: "/digit/{123}", operation_id: "get_digit" },
+      { path_template: "/unicode/{ümlaut}", operation_id: "get_unicode" },
+      { path_template: "/punctuation/{$id}", operation_id: "get\tpunctuation" },
+      { path_template: "/regex/{id}", operation_id: "get_regex" },
+      { path_template: "/name:verb", operation_id: "get_literal_colon" },
       { path_template: "/files/{*path}", operation_id: "get_file" },
       { path_template: "/files/{*path}", operation_id: "get_file" },
     ]);

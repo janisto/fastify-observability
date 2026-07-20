@@ -1,8 +1,6 @@
 import type { TraceContext, TraceContextLevel } from "./types.js";
 
 const BASE_TRACEPARENT_LENGTH = 55;
-const MAX_TRACEPARENT_LENGTH = 512;
-const MAX_TRACESTATE_LENGTH = 512;
 const MAX_TRACESTATE_MEMBERS = 32;
 const KEY_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789_-*/";
 const LEVEL_2_KEY_CHARS = `${KEY_CHARS}@`;
@@ -11,10 +9,13 @@ function isLowerHex(value: string): boolean {
   return value.length > 0 && /^[0-9a-f]+$/.test(value);
 }
 
-function isPrintableAscii(value: string): boolean {
+function isNativeHttpFieldValue(value: string): boolean {
   return [...value].every((character) => {
     const codePoint = character.codePointAt(0);
-    return codePoint !== undefined && codePoint >= 0x20 && codePoint <= 0x7e;
+    return (
+      codePoint !== undefined &&
+      (codePoint === 0x09 || (codePoint >= 0x20 && codePoint <= 0x7e) || (codePoint >= 0x80 && codePoint <= 0xff))
+    );
   });
 }
 
@@ -27,12 +28,7 @@ export function resolveTraceContextLevel(value: unknown = 1): TraceContextLevel 
 
 export function parseTraceparent(value: unknown, traceContextLevel: TraceContextLevel = 1): TraceContext | null {
   const resolvedLevel = resolveTraceContextLevel(traceContextLevel);
-  if (
-    typeof value !== "string" ||
-    value.length < BASE_TRACEPARENT_LENGTH ||
-    Buffer.byteLength(value, "utf8") > MAX_TRACEPARENT_LENGTH ||
-    !isPrintableAscii(value)
-  ) {
+  if (typeof value !== "string" || value.length < BASE_TRACEPARENT_LENGTH || !isNativeHttpFieldValue(value)) {
     return null;
   }
   if (value[2] !== "-" || value[35] !== "-" || value[52] !== "-") {
@@ -147,7 +143,6 @@ export function attachTracestate(trace: TraceContext, values: readonly string[])
   }
   const tracestate = values.join(",");
   if (
-    tracestate.length > MAX_TRACESTATE_LENGTH ||
     ![...tracestate].every((character) => {
       const code = character.charCodeAt(0);
       return code === 0x09 || (code >= 0x20 && code <= 0x7e);

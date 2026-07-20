@@ -45,7 +45,13 @@ describe("examples", () => {
       expect(response.headers["x-request-id"]).toBe("example-request");
       expect(response.json()).toMatchObject({ requestId: "example-request", correlationId: TRACE_ID });
       expect(canonicalLoggerProfile(app.log)).toEqual(
-        preset === "gcp" ? { preset, gcpProfileVersion: "0.1.0" } : { preset },
+        preset === "gcp"
+          ? { preset, gcpProfileVersion: "0.1.0" }
+          : preset === "aws"
+            ? { preset, awsProfileVersion: "0.1.0" }
+            : preset === "azure"
+              ? { preset, azureProfileVersion: "0.1.0" }
+              : { preset },
       );
       expect(app.hasRequestDecorator("observability")).toBe(true);
       expect(app.hasRoute({ method: "GET", url: "/" })).toBe(false);

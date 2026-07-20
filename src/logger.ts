@@ -7,13 +7,15 @@ import pino, {
   type Logger,
   type LoggerOptions,
 } from "pino";
-import type { GcpProfileVersion, LoggingPreset } from "./types.js";
+import type { AwsProfileVersion, AzureProfileVersion, GcpProfileVersion, LoggingPreset } from "./types.js";
 
 const PRESETS = new Set<LoggingPreset>(["default", "gcp", "aws", "azure"]);
 const LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal", "silent"]);
 const LOGGER_OPTION_KEYS = new Set([
   "preset",
   "gcpProfileVersion",
+  "awsProfileVersion",
+  "azureProfileVersion",
   "level",
   "base",
   "redact",
@@ -88,6 +90,8 @@ export const PROTECTED_LOG_FIELDS = new Set([
 export interface ObservabilityLoggerOptions {
   preset?: LoggingPreset;
   gcpProfileVersion?: GcpProfileVersion;
+  awsProfileVersion?: AwsProfileVersion;
+  azureProfileVersion?: AzureProfileVersion;
   level?: LevelWithSilent;
   base?: LoggerOptions["base"];
   redact?: LoggerOptions["redact"];
@@ -104,6 +108,8 @@ export type ObservabilityLogger = Omit<Logger, "child" | "level" | "onChild" | "
 export interface ObservabilityLoggerProfile {
   readonly preset: LoggingPreset;
   readonly gcpProfileVersion?: GcpProfileVersion;
+  readonly awsProfileVersion?: AwsProfileVersion;
+  readonly azureProfileVersion?: AzureProfileVersion;
 }
 
 type NativeChild = (bindings: Bindings, options?: ChildLoggerOptions) => Logger;
@@ -112,6 +118,36 @@ const profiles = new WeakMap<object, ObservabilityLoggerProfile>();
 
 export function bindingValuesEqual(left: unknown, right: unknown): boolean {
   return Object.is(left, right) || isDeepStrictEqual(left, right);
+}
+
+function validateProfileOption(
+  preset: LoggingPreset,
+  owner: Exclude<LoggingPreset, "default">,
+  name: "gcpProfileVersion" | "awsProfileVersion" | "azureProfileVersion",
+  value: string | undefined,
+): void {
+  if (value !== undefined && preset !== owner) {
+    throw new TypeError(`${name} requires preset "${owner}"`);
+  }
+  if (preset === owner && value !== undefined && value !== "0.1.0") {
+    throw new TypeError(`unsupported ${owner.toUpperCase()} profile version; expected 0.1.0`);
+  }
+}
+
+function resolveLoggerProfile(options: ObservabilityLoggerOptions, preset: LoggingPreset): ObservabilityLoggerProfile {
+  validateProfileOption(preset, "gcp", "gcpProfileVersion", options.gcpProfileVersion);
+  validateProfileOption(preset, "aws", "awsProfileVersion", options.awsProfileVersion);
+  validateProfileOption(preset, "azure", "azureProfileVersion", options.azureProfileVersion);
+  switch (preset) {
+    case "gcp":
+      return Object.freeze({ preset, gcpProfileVersion: options.gcpProfileVersion ?? "0.1.0" });
+    case "aws":
+      return Object.freeze({ preset, awsProfileVersion: options.awsProfileVersion ?? "0.1.0" });
+    case "azure":
+      return Object.freeze({ preset, azureProfileVersion: options.azureProfileVersion ?? "0.1.0" });
+    default:
+      return Object.freeze({ preset });
+  }
 }
 
 function validateOptions(options: ObservabilityLoggerOptions): ObservabilityLoggerProfile {
@@ -126,14 +162,6 @@ function validateOptions(options: ObservabilityLoggerOptions): ObservabilityLogg
   const preset = options.preset ?? "default";
   if (!PRESETS.has(preset)) {
     throw new TypeError("logger preset must be default, gcp, aws, or azure");
-  }
-  if (preset === "gcp") {
-    const version = options.gcpProfileVersion ?? "0.1.0";
-    if (version !== "0.1.0") {
-      throw new TypeError("unsupported GCP profile version; expected 0.1.0");
-    }
-  } else if (options.gcpProfileVersion !== undefined) {
-    throw new TypeError('gcpProfileVersion requires preset "gcp"');
   }
   if (options.level !== undefined && (typeof options.level !== "string" || !LEVELS.has(options.level))) {
     throw new TypeError("logger level must be a standard Pino level");
@@ -154,9 +182,7 @@ function validateOptions(options: ObservabilityLoggerOptions): ObservabilityLogg
   ) {
     throw new TypeError("logger destination must provide write(message)");
   }
-  return Object.freeze(
-    preset === "gcp" ? { preset, gcpProfileVersion: options.gcpProfileVersion ?? "0.1.0" } : { preset },
-  );
+  return resolveLoggerProfile(options, preset);
 }
 
 function validateTransport(profile: ObservabilityLoggerProfile, transport: LoggerOptions["transport"]): void {

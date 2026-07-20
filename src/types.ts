@@ -2,6 +2,8 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 
 export type LoggingPreset = "default" | "gcp" | "aws" | "azure";
 export type GcpProfileVersion = "0.1.0";
+export type AwsProfileVersion = "0.1.0";
+export type AzureProfileVersion = "0.1.0";
 export type AccessLogLevel = "debug" | "info" | "warn" | "error";
 export type TraceContextLevel = 1 | 2;
 

@@ -36,19 +36,24 @@ describe("request IDs", () => {
     expect(generate).toHaveBeenCalledTimes(3);
   });
 
-  it("applies a custom validator only to syntactically valid incoming IDs", () => {
-    const validateIncoming = vi.fn((value: string) => value.startsWith("allowed-"));
+  it("lets a custom validator broaden caller IDs only within Node's header boundary", () => {
+    const validateIncoming = vi.fn(
+      (value: string) => value.startsWith("allowed-") || value === "id:42" || value.length === 129,
+    );
     const generator = createRequestIdGenerator({
       requestIdHeader: "X-Correlation-ID",
       validateIncoming,
       generate: () => "generated",
     });
     expect(generator(request(["x-correlation-id", "allowed-caller"]))).toBe("allowed-caller");
+    expect(generator(request(["x-correlation-id", "id:42"]))).toBe("id:42");
+    expect(generator(request(["x-correlation-id", "x".repeat(129)]))).toBe("x".repeat(129));
     expect(generator(request(["x-correlation-id", "other"]))).toBe("generated");
     expect(generator(request(["x-correlation-id", "not valid"]))).toBe("generated");
-    expect(validateIncoming).toHaveBeenCalledTimes(2);
+    expect(generator(request(["x-correlation-id", "line\nbreak"]))).toBe("generated");
+    expect(validateIncoming).toHaveBeenCalledTimes(5);
     expect(validateIncoming).toHaveBeenNthCalledWith(1, "allowed-caller");
-    expect(validateIncoming).toHaveBeenNthCalledWith(2, "other");
+    expect(validateIncoming).toHaveBeenNthCalledWith(4, "other");
   });
 
   it("returns a valid custom ID when generation recovers on the second attempt", () => {

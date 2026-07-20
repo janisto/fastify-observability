@@ -444,6 +444,19 @@ describe("canonical Pino logger", () => {
   });
 
   it.each([
+    ["aws", "awsProfileVersion"],
+    ["azure", "azureProfileVersion"],
+  ] as const)("resolves and exposes the current %s profile", (preset, versionKey) => {
+    const latest = createObservabilityLogger({ preset, destination: new JsonLineStream() });
+    const pinned = createObservabilityLogger({ preset, [versionKey]: "0.1.0", destination: new JsonLineStream() });
+    expect(getObservabilityLoggerProfile(latest)).toEqual({ preset, [versionKey]: "0.1.0" });
+    expect(getObservabilityLoggerProfile(pinned)).toEqual({ preset, [versionKey]: "0.1.0" });
+    expect(() => createObservabilityLogger({ preset, [versionKey]: "0.2.0" })).toThrow(
+      `unsupported ${preset.toUpperCase()} profile version; expected 0.1.0`,
+    );
+  });
+
+  it.each([
     ["null options", null, "logger options must be a record"],
     ["an options array", [], "logger options must be a record"],
     ["an unknown preset", { preset: "unknown" }, "logger preset must be default, gcp, aws, or azure"],

@@ -1,3 +1,4 @@
+import { validateHeaderValue } from "node:http";
 import { isIP } from "node:net";
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from "fastify";
 import type { NormalizedOptions } from "./context.js";
@@ -75,16 +76,30 @@ export function canonicalPeerIp(candidate: string | undefined): string | undefin
   return hostname.slice(1, -1);
 }
 
-const ROUTE_PARAMETER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_PROTOBUF_DURATION_MILLISECONDS_EXCLUSIVE = 315_576_000_001_000;
-function containsControlCharacter(value: string): boolean {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0);
-    if (codePoint !== undefined && (codePoint < 0x20 || codePoint === 0x7f)) {
-      return true;
+
+function splitRouteSegments(template: string): string[] {
+  const segments: string[] = [];
+  let segment = "";
+  let escaped = false;
+  for (const character of template.slice(1)) {
+    if (escaped) {
+      segment += `\\${character}`;
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === "/") {
+      segments.push(segment);
+      segment = "";
+    } else {
+      segment += character;
     }
   }
-  return false;
+  if (escaped) {
+    segment += "\\";
+  }
+  segments.push(segment);
+  return segments;
 }
 
 export function canonicalRouteTemplate(nativeTemplate: string): string | undefined {
@@ -95,7 +110,7 @@ export function canonicalRouteTemplate(nativeTemplate: string): string | undefin
     return undefined;
   }
   const canonical: string[] = [];
-  const segments = nativeTemplate.slice(1).split("/");
+  const segments = splitRouteSegments(nativeTemplate);
   for (const [index, segment] of segments.entries()) {
     if (segment === "*") {
       if (index !== segments.length - 1) {
@@ -105,25 +120,24 @@ export function canonicalRouteTemplate(nativeTemplate: string): string | undefin
       continue;
     }
     if (segment.startsWith(":")) {
-      const match = /^:([A-Za-z_][A-Za-z0-9_]*)(.*)$/.exec(segment);
-      const name = match?.[1];
-      const constraint = match?.[2] ?? "";
-      if (name === undefined || !ROUTE_PARAMETER.test(name) || (constraint !== "" && !isRouteConstraint(constraint))) {
+      const constraintStart = segment.indexOf("(");
+      const name = segment.slice(1, constraintStart === -1 ? undefined : constraintStart);
+      const constraint = constraintStart === -1 ? "" : segment.slice(constraintStart);
+      if (
+        name.length === 0 ||
+        [...name].some((character) => "/{}*?#:".includes(character)) ||
+        (constraint !== "" && !isRouteConstraint(constraint))
+      ) {
         return undefined;
       }
       canonical.push(`{${name}}`);
       continue;
     }
-    if (
-      segment.includes(":") ||
-      segment.includes("*") ||
-      segment.includes("{") ||
-      segment.includes("}") ||
-      segment.includes("?")
-    ) {
+    const staticSegment = segment.replaceAll("::", ":");
+    if (staticSegment.includes("::") || /(^|[^:]):([^:]|$)/.test(segment) || /[*{}?]/.test(segment)) {
       return undefined;
     }
-    canonical.push(segment);
+    canonical.push(staticSegment);
   }
   return `/${canonical.join("/")}`;
 }
@@ -178,7 +192,7 @@ function operationId(request: FastifyRequest): string | undefined {
   }
   try {
     const value = Reflect.get(schema, "operationId");
-    return typeof value === "string" && value.length > 0 && !containsControlCharacter(value) ? value : undefined;
+    return typeof value === "string" && value.length > 0 ? value : undefined;
   } catch {
     return undefined;
   }
@@ -187,7 +201,15 @@ function operationId(request: FastifyRequest): string | undefined {
 export function requestUserAgent(request: FastifyRequest): string | undefined {
   const values = rawHeaderValues(request.raw, "user-agent");
   const value = values.length === 1 ? values[0] : undefined;
-  return value !== undefined && value.length > 0 && !containsControlCharacter(value) ? value : undefined;
+  if (value === undefined || value.length === 0) {
+    return undefined;
+  }
+  try {
+    validateHeaderValue("user-agent", value);
+    return value;
+  } catch {
+    return undefined;
+  }
 }
 
 function durationMilliseconds(state: AccessState): number {
@@ -202,17 +224,19 @@ function durationMilliseconds(state: AccessState): number {
     state.diagnose("clock", "clock returned a non-finite value; access duration fell back to zero");
     return 0;
   }
-  if (value >= MAX_PROTOBUF_DURATION_MILLISECONDS_EXCLUSIVE) {
-    state.diagnose("clock", "clock exceeded the portable duration range; access duration fell back to zero");
-    return 0;
-  }
   return value > 0 ? value : 0;
 }
 
-function protobufDuration(durationMs: number): string {
-  const nanoseconds = Math.max(Math.round(durationMs * 1_000_000), 0);
-  const seconds = Math.floor(nanoseconds / 1_000_000_000);
-  const nanos = nanoseconds % 1_000_000_000;
+function protobufDuration(durationMs: number): string | undefined {
+  if (durationMs >= MAX_PROTOBUF_DURATION_MILLISECONDS_EXCLUSIVE) {
+    return undefined;
+  }
+  let seconds = Math.floor(durationMs / 1_000);
+  let nanos = Math.max(Math.round((durationMs - seconds * 1_000) * 1_000_000), 0);
+  if (nanos === 1_000_000_000) {
+    seconds += 1;
+    nanos = 0;
+  }
   return nanos === 0 ? `${seconds}s` : `${seconds}.${String(nanos).padStart(9, "0").replace(/0+$/, "")}s`;
 }
 
@@ -333,7 +357,10 @@ function accessFields(
     if (status !== undefined) {
       httpRequest["status"] = status;
     }
-    httpRequest["latency"] = protobufDuration(durationMs);
+    const latency = protobufDuration(durationMs);
+    if (latency !== undefined) {
+      httpRequest["latency"] = latency;
+    }
     if (state.peerIp !== undefined) {
       httpRequest["remoteIp"] = state.peerIp;
     }

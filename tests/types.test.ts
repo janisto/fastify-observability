@@ -78,6 +78,14 @@ describe("public types", () => {
   });
 
   it("keeps context readonly", () => {
+    // @ts-expect-error v2 TraceContext requires the selected grammar level
+    const removedV1Shape: TraceContext = {
+      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+      parentId: "00f067aa0ba902b7",
+      flags: "01",
+      sampled: true,
+      traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    };
     const compileOnly = (context: RequestObservability, trace: TraceContext) => {
       // @ts-expect-error public request context is readonly
       context.requestId = "changed";
@@ -85,6 +93,7 @@ describe("public types", () => {
       trace.traceId = "changed";
     };
     expectTypeOf(compileOnly).toBeFunction();
+    expectTypeOf(removedV1Shape).toEqualTypeOf<TraceContext>();
   });
 
   it("keeps opinionated logger and preset controls out of the wrong public surface", () => {

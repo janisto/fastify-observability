@@ -43,13 +43,13 @@ describe("traceparent", () => {
     expect(trace).toMatchObject({ flags, sampled, traceContextLevel: 2, traceIdRandom: random });
   });
 
-  it("accepts future framing up to the wire-length boundary", () => {
+  it("accepts opaque future framing beyond the former package boundary", () => {
     expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01`)).not.toBeNull();
     expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01-extra`)).not.toBeNull();
     const maximum = `01-${TRACE_ID}-${PARENT_ID}-01-${"x".repeat(456)}`;
     expect(maximum).toHaveLength(512);
     expect(parseTraceparent(maximum)).not.toBeNull();
-    expect(parseTraceparent(`${maximum}x`)).toBeNull();
+    expect(parseTraceparent(`${maximum}x`)).not.toBeNull();
   });
 
   it.each([
@@ -61,17 +61,18 @@ describe("traceparent", () => {
     expect(trace?.traceIdRandom).toBeUndefined();
   });
 
-  it("enforces printable US-ASCII and the exact future-version wire boundary", () => {
+  it("leaves future fields opaque while enforcing the native HTTP field boundary", () => {
     const base = `01-${TRACE_ID}-${PARENT_ID}-01`;
     expect(parseTraceparent(`${base}- `)).not.toBeNull();
     expect(parseTraceparent(`${base}-~`)).not.toBeNull();
-    expect(parseTraceparent(`${base}-opaque-ümlaut`)).toBeNull();
+    expect(parseTraceparent(`${base}-opaque-ümlaut`)).not.toBeNull();
     expect(parseTraceparent(`${base}-\u001f`)).toBeNull();
     expect(parseTraceparent(`${base}-\u007f`)).toBeNull();
     const maximum = `${base}-${"x".repeat(456)}`;
     expect(maximum).toHaveLength(512);
     expect(parseTraceparent(maximum)).not.toBeNull();
-    expect(parseTraceparent(`${maximum}x`)).toBeNull();
+    expect(parseTraceparent(`${maximum}x`)).not.toBeNull();
+    expect(parseTraceparent(`${base}-opaque-€`)).toBeNull();
   });
 
   it.each([2, 35, 52])("rejects corruption at required separator index %i", (separatorIndex) => {
@@ -148,7 +149,7 @@ describe("tracestate", () => {
     );
   });
 
-  it("enforces the exact member, value, and total-length boundaries", () => {
+  it("enforces member and value grammar without treating 512 as a rejection ceiling", () => {
     const thirtyTwoMembers = Array.from({ length: 32 }, (_, index) => `a${index}=1`).join(",");
     expect(attachTracestate(trace, [thirtyTwoMembers]).tracestate).toBe(thirtyTwoMembers);
     expect(attachTracestate(trace, [`${thirtyTwoMembers},overflow=1`])).toBe(trace);
@@ -157,10 +158,9 @@ describe("tracestate", () => {
     expect(attachTracestate(trace, [maximumValue]).tracestate).toBe(maximumValue);
     expect(attachTracestate(trace, [`a=${"x".repeat(257)}`])).toBe(trace);
 
-    const maximumTotal = `a=${"x".repeat(256)},b=${"y".repeat(251)}`;
-    expect(maximumTotal).toHaveLength(512);
-    expect(attachTracestate(trace, [maximumTotal]).tracestate).toBe(maximumTotal);
-    expect(attachTracestate(trace, [`${maximumTotal}x`])).toBe(trace);
+    const overFormerMinimum = `${"a".repeat(256)}=${"y".repeat(256)}`;
+    expect(overFormerMinimum).toHaveLength(513);
+    expect(attachTracestate(trace, [overFormerMinimum]).tracestate).toBe(overFormerMinimum);
   });
 
   it("enforces simple and multi-tenant key-length boundaries", () => {

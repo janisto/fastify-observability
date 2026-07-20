@@ -31,8 +31,8 @@ The changes in this section target `2.0.0` and must not be published on the
 
 ### Added
 
-- Added specification-defined GCP profile `0.1.0`, newest-installed resolution,
-  exact pinning through `gcpProfileVersion`, and safe effective-profile
+- Added exact current `0.1.0` profiles for GCP, AWS, and Azure, exact pinning
+  through their provider-specific options, and safe effective-profile
   introspection through `getObservabilityLoggerProfile()`.
 - Added independent `capturePath`, `capturePeerIp`, and `captureUserAgent`
   opt-ins plus an injectable monotonic `clock` for deterministic tests.
@@ -58,7 +58,7 @@ The changes in this section target `2.0.0` and must not be published on the
 - Aligned the GCP health integration fixture with service version `1.0.0`,
   operation ID `health_check`, and deterministic `12.5` ms output.
 - Canonicalized retained `tracestate` field-lines while preserving raw wire
-  order and valid empty members.
+  order and valid empty members, without treating 512 characters as a maximum.
 - Treated dash-delimited future-version `traceparent` suffixes as opaque while
   retaining strict validation of the common 55-character prefix.
 - Standardized observable terminal reasons as `client_disconnect`,
@@ -70,12 +70,15 @@ The changes in this section target `2.0.0` and must not be published on the
 
 ### Fixed
 
-- Preserve framework-valid route parameter names beyond 64 characters, reject
-  non-ASCII or control-bearing `traceparent` fields, and safely fall back to
-  zero when elapsed time exceeds the GCP protobuf Duration range.
+- Preserve framework-valid native route forms, HTTP-safe opaque future
+  `traceparent` suffixes without an invented length cap, custom-admitted native
+  request IDs, HTAB User-Agent values, and nonempty static operation IDs.
+- Preserve portable duration at the GCP protobuf boundary, format the complete
+  representable range without precision loss, and omit only an unrepresentable
+  GCP latency projection.
 
-- Enforced the `traceparent` input ceiling in UTF-8 bytes and retained an
-  authoritative committed response status when a timeout terminates the body.
+- Retained an authoritative committed response status when a timeout terminates
+  the body.
 - Preserved sampling while omitting the Level 2 random flag for unknown future
   `traceparent` versions.
 - Retained canonical `path_template` output for valid whole-segment Fastify

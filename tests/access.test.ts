@@ -118,6 +118,7 @@ describe("access helpers", () => {
     const withHeaders = (rawHeaders: string[]) => ({ raw: { rawHeaders } }) as unknown as FastifyRequest;
 
     expect(requestUserAgent(withHeaders(["User-Agent", "catalog-client/1.0"]))).toBe("catalog-client/1.0");
+    expect(requestUserAgent(withHeaders(["User-Agent", "agent\tcomment"]))).toBe("agent\tcomment");
     expect(requestUserAgent(withHeaders(["User-Agent", "first", "user-agent", "second"]))).toBeUndefined();
     expect(requestUserAgent(withHeaders(["User-Agent", ""]))).toBeUndefined();
     expect(requestUserAgent(withHeaders(["User-Agent", "agent/1.0\nforged"]))).toBeUndefined();
@@ -296,10 +297,28 @@ describe("access helpers", () => {
     expect(fields?.["httpRequest"]).toMatchObject({ latency: "0.000000001s" });
   });
 
+  it("carries protobuf nanosecond rounding into the next second", () => {
+    const sample = accessState({
+      started: 0,
+      clock: () => 999.999_999_6,
+    });
+    const state = {
+      ...sample.state,
+      options: { ...sample.state.options, preset: "gcp" as const },
+    };
+
+    emitAccessRecord(state, "response", 200);
+
+    const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(fields["duration_ms"]).toBeCloseTo(999.999_999_6, 9);
+    expect((fields["httpRequest"] as Record<string, unknown>)["latency"]).toBe("1s");
+  });
+
   it.each([
     [315_576_000_000_000, 315_576_000_000_000, "315576000000s"],
-    [315_576_000_001_000, 0, "0s"],
-  ] as const)("bounds GCP protobuf duration input %d", (elapsed, durationMs, latency) => {
+    [315_576_000_000_999, 315_576_000_000_999, "315576000000.999s"],
+    [315_576_000_001_000, 315_576_000_001_000, undefined],
+  ] as const)("projects GCP protobuf duration input %d without changing portable time", (elapsed, durationMs, latency) => {
     const sample = accessState({
       started: 0,
       clock: () => elapsed,
@@ -311,10 +330,9 @@ describe("access helpers", () => {
 
     emitAccessRecord(state, "response", 200);
 
-    expect(sample.log.mock.calls[0]?.[0]).toMatchObject({
-      duration_ms: durationMs,
-      httpRequest: { latency },
-    });
+    const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(fields["duration_ms"]).toBe(durationMs);
+    expect((fields["httpRequest"] as Record<string, unknown>)["latency"]).toBe(latency);
   });
 
   it("clamps a negative duration to zero and omits an untrustworthy timeout status", () => {
@@ -393,14 +411,14 @@ describe("access helpers", () => {
     expect(sample.log.mock.calls[0]?.[0]).not.toHaveProperty("operation_id");
   });
 
-  it("omits an operationId containing control characters", () => {
+  it("preserves a nonempty application-static operationId containing controls", () => {
     const sample = accessState();
     Reflect.set(sample.state.request.routeOptions, "schema", { operationId: "get_item\nforged" });
 
     emitAccessRecord(sample.state, "response", 200);
 
     expect(sample.logs.info).toHaveBeenCalledOnce();
-    expect(sample.log.mock.calls[0]?.[0]).not.toHaveProperty("operation_id");
+    expect(sample.log.mock.calls[0]?.[0]).toHaveProperty("operation_id", "get_item\nforged");
   });
 
   it("omits all route identity for an unmatched request even if fallback metadata is present", () => {

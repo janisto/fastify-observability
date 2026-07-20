@@ -154,6 +154,8 @@ record contract.
 | --- | --- | --- |
 | `preset` | `"default"` | `default`, `gcp`, `aws`, or `azure` field shape |
 | `gcpProfileVersion` | Newest installed GCP profile | Exact supported GCP profile pin; currently `"0.1.0"` |
+| `awsProfileVersion` | Current AWS profile | Exact supported AWS profile pin; currently `"0.1.0"` |
+| `azureProfileVersion` | Current Azure profile | Exact supported Azure profile pin; currently `"0.1.0"` |
 | `level` | `"info"` | Standard Pino threshold, including `silent` |
 | `base` | Pino default | Stable application bindings such as service metadata |
 | `redact` | None | Explicit root Pino redaction; no fields are redacted by default |
@@ -222,15 +224,17 @@ plugin options, so the logger envelope and provider fields cannot drift apart.
 Unknown options are rejected instead of being silently ignored.
 
 `createRequestIdGenerator()` accepts `requestIdHeader`, `generate`, and
-`validateIncoming`. `validateIncoming` narrows only caller-provided IDs; it does
-not reject an application generator's output or the package fallback. Every ID,
-regardless of source, must still pass the package baseline: 1–128 ASCII
-URI-unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `.`, `_`, or `~`).
+`validateIncoming`. `validateIncoming` applies only to caller-provided IDs; it
+does not reject an application generator's output or the package fallback.
+Without it, callers must pass the 1–128 ASCII URI-unreserved baseline. With it,
+the application may admit any nonempty value that Node accepts as an HTTP
+header value, including punctuation or values longer than 128 bytes. Generated
+and fallback IDs always retain the package baseline.
 
-Missing, empty, duplicate, oversized, non-ASCII, or invalid incoming values are
-replaced. A custom generator is tried twice and then failure-contained with a
-package fallback. When a custom request-ID header is used, pass the same name to
-the generator and plugin.
+Missing, empty, duplicate, or policy-invalid incoming values are replaced. A
+custom generator is tried twice and then failure-contained with a package
+fallback. When a custom request-ID header is used, pass the same name to the
+generator and plugin.
 
 `isValidRequestId(value)` exposes the baseline check. `parseTraceparent(value,
 level?)` exposes strict W3C parsing, and `resolveTraceContextLevel(value)`
@@ -252,13 +256,15 @@ and the configured response header.
 
 `traceparent` parsing defaults to the pinned W3C Trace Context Level 1
 Recommendation and rejects uppercase hex, zero IDs, duplicates, malformed
-delimiters, invalid version framing, and oversized input. A dash-delimited
-future-version suffix is opaque. Valid `tracestate`
+delimiters, invalid version framing, and unsafe native field content. Version
+`00` is exactly 55 characters; a dash-delimited future-version suffix is opaque
+and has no package-invented length ceiling. Valid `tracestate`
 field-lines retain wire order and are canonicalized by removing HTTP optional
 whitespace around members while enforcing the selected-level key grammar,
-unique keys, 32 members, and 512 bytes. Empty members are valid and count
-toward the limit. Invalid trace input is ignored and correlation falls back to
-the request ID.
+unique keys, and 32 members. The package can propagate at least 512 characters
+and does not reject a valid 513-character value merely for crossing that
+boundary. Empty members are valid and count toward the member limit. Invalid
+trace input is ignored and correlation falls back to the request ID.
 
 Level 2 is explicit and immutable after plugin registration:
 
@@ -384,10 +390,15 @@ Set `preset` in `createObservabilityLogger()`.
   by the installed package, currently `0.1.0`; exact pinning accepts `"0.1.0"`.
   Unsupported pins fail logger creation and resolution performs no network
   lookup.
-- `aws` adds flat `xray_trace_id` in `1-8hex-24hex` form. It does not create an
-  X-Ray segment or parse legacy X-Ray headers.
-- `azure` adds flat `operation_Id` and `operation_ParentId`. It does not start
-  Application Insights telemetry or parse legacy request headers.
+- `aws` adds flat `xray_trace_id` in `1-8hex-24hex` form. Omission resolves to
+  exact current profile `0.1.0`; `awsProfileVersion: "0.1.0"` pins it, and
+  `getObservabilityLoggerProfile()` exposes the resolved value. Other pins are
+  rejected. It does not create an X-Ray segment or parse legacy X-Ray headers.
+- `azure` adds flat `operation_Id` and `operation_ParentId`. Omission resolves
+  to exact current profile `0.1.0`; `azureProfileVersion: "0.1.0"` pins it, and
+  `getObservabilityLoggerProfile()` exposes the resolved value. Other pins are
+  rejected. It does not start Application Insights telemetry or parse legacy
+  request headers.
 - `default` emits provider-neutral request and W3C correlation fields.
 
 Provider fields correlate logs only. No provider SDK is initialized and no span
@@ -515,18 +526,19 @@ configuration, and Justfile recipe together when support is available.
   defines the default `traceparent` and `tracestate` contract.
 - [W3C Trace Context Level 2 Candidate Recommendation Draft](https://www.w3.org/TR/2024/CRD-trace-context-2-20240328/)
   defines the explicit Level 2 key grammar and random trace-ID flag.
-- [Google Cloud trace and log integration](https://docs.cloud.google.com/trace/docs/trace-log-integration)
+- [Google Cloud trace and log integration](https://cloud.google.com/trace/docs/trace-log-integration)
   documents the bare `TRACE_ID` as the preferred trace field format.
-- [Google Cloud Trace release notes](https://docs.cloud.google.com/trace/docs/release-notes)
+- [Google Cloud Trace release notes](https://cloud.google.com/trace/docs/release-notes)
   record the January 26, 2026 change that made the trace ID preferred while
   retaining the full project resource name as a supported legacy format.
-- [Google Cloud structured logging](https://docs.cloud.google.com/logging/docs/structured-logging)
+- [Google Cloud structured logging](https://cloud.google.com/logging/docs/structured-logging)
   documents `severity`, `message`, `httpRequest`, and the special
   `logging.googleapis.com/*` JSON fields.
-- [AWS X-Ray trace IDs](https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html)
+- [AWS X-Ray trace IDs](https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html#xray-api-traceids)
   document converting a W3C trace ID to `1-8hex-24hex` form.
 - [Azure Application Insights data model](https://learn.microsoft.com/en-us/azure/azure-monitor/app/data-model-complete)
-  documents `operation_Id` and `operation_ParentId` correlation fields.
+  defines `operation_Id` as the root-operation identifier and
+  `operation_ParentId` as the immediate-parent identifier.
 
 ## License
 
