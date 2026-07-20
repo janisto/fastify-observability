@@ -46,8 +46,6 @@ describe("traceparent", () => {
   it("accepts future framing up to the wire-length boundary", () => {
     expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01`)).not.toBeNull();
     expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01-extra`)).not.toBeNull();
-    expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01-opaque-ümlaut`)).not.toBeNull();
-    expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01-\u001f`)).not.toBeNull();
     const maximum = `01-${TRACE_ID}-${PARENT_ID}-01-${"x".repeat(456)}`;
     expect(maximum).toHaveLength(512);
     expect(parseTraceparent(maximum)).not.toBeNull();
@@ -63,12 +61,16 @@ describe("traceparent", () => {
     expect(trace?.traceIdRandom).toBeUndefined();
   });
 
-  it("enforces the future-version limit in UTF-8 bytes", () => {
-    const maximum = `01-${TRACE_ID}-${PARENT_ID}-01-${"é".repeat(228)}`;
-    expect(maximum).toHaveLength(284);
-    expect(Buffer.byteLength(maximum, "utf8")).toBe(512);
+  it("enforces printable US-ASCII and the exact future-version wire boundary", () => {
+    const base = `01-${TRACE_ID}-${PARENT_ID}-01`;
+    expect(parseTraceparent(`${base}- `)).not.toBeNull();
+    expect(parseTraceparent(`${base}-~`)).not.toBeNull();
+    expect(parseTraceparent(`${base}-opaque-ümlaut`)).toBeNull();
+    expect(parseTraceparent(`${base}-\u001f`)).toBeNull();
+    expect(parseTraceparent(`${base}-\u007f`)).toBeNull();
+    const maximum = `${base}-${"x".repeat(456)}`;
+    expect(maximum).toHaveLength(512);
     expect(parseTraceparent(maximum)).not.toBeNull();
-    expect(Buffer.byteLength(`${maximum}x`, "utf8")).toBe(513);
     expect(parseTraceparent(`${maximum}x`)).toBeNull();
   });
 

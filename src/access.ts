@@ -75,7 +75,8 @@ export function canonicalPeerIp(candidate: string | undefined): string | undefin
   return hostname.slice(1, -1);
 }
 
-const ROUTE_PARAMETER = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const ROUTE_PARAMETER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MAX_PROTOBUF_DURATION_MILLISECONDS_EXCLUSIVE = 315_576_000_001_000;
 function containsControlCharacter(value: string): boolean {
   for (const character of value) {
     const codePoint = character.codePointAt(0);
@@ -104,7 +105,7 @@ export function canonicalRouteTemplate(nativeTemplate: string): string | undefin
       continue;
     }
     if (segment.startsWith(":")) {
-      const match = /^:([A-Za-z_][A-Za-z0-9_]{0,63})(.*)$/.exec(segment);
+      const match = /^:([A-Za-z_][A-Za-z0-9_]*)(.*)$/.exec(segment);
       const name = match?.[1];
       const constraint = match?.[2] ?? "";
       if (name === undefined || !ROUTE_PARAMETER.test(name) || (constraint !== "" && !isRouteConstraint(constraint))) {
@@ -199,6 +200,10 @@ function durationMilliseconds(state: AccessState): number {
   }
   if (!Number.isFinite(value)) {
     state.diagnose("clock", "clock returned a non-finite value; access duration fell back to zero");
+    return 0;
+  }
+  if (value >= MAX_PROTOBUF_DURATION_MILLISECONDS_EXCLUSIVE) {
+    state.diagnose("clock", "clock exceeded the portable duration range; access duration fell back to zero");
     return 0;
   }
   return value > 0 ? value : 0;

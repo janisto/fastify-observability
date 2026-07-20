@@ -11,6 +11,13 @@ function isLowerHex(value: string): boolean {
   return value.length > 0 && /^[0-9a-f]+$/.test(value);
 }
 
+function isPrintableAscii(value: string): boolean {
+  return [...value].every((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && codePoint >= 0x20 && codePoint <= 0x7e;
+  });
+}
+
 export function resolveTraceContextLevel(value: unknown = 1): TraceContextLevel {
   if (value !== 1 && value !== 2) {
     throw new TypeError("traceContextLevel must be 1 or 2");
@@ -23,7 +30,8 @@ export function parseTraceparent(value: unknown, traceContextLevel: TraceContext
   if (
     typeof value !== "string" ||
     value.length < BASE_TRACEPARENT_LENGTH ||
-    Buffer.byteLength(value, "utf8") > MAX_TRACEPARENT_LENGTH
+    Buffer.byteLength(value, "utf8") > MAX_TRACEPARENT_LENGTH ||
+    !isPrintableAscii(value)
   ) {
     return null;
   }

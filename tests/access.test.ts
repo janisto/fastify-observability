@@ -17,6 +17,7 @@ describe("access helpers", () => {
   it.each([
     ["/health", "/health"],
     ["/items/:item_id", "/items/{item_id}"],
+    [`/items/:${"a".repeat(65)}`, `/items/{${"a".repeat(65)}}`],
     ["/items/:item_id(\\d+)", "/items/{item_id}"],
     ["/choice/:id((?:foo|bar))", "/choice/{id}"],
     ["/choice/:id([()a-z]+)", "/choice/{id}"],
@@ -293,6 +294,27 @@ describe("access helpers", () => {
     const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
     expect(fields?.["duration_ms"]).toBeCloseTo(0.000_001, 9);
     expect(fields?.["httpRequest"]).toMatchObject({ latency: "0.000000001s" });
+  });
+
+  it.each([
+    [315_576_000_000_000, 315_576_000_000_000, "315576000000s"],
+    [315_576_000_001_000, 0, "0s"],
+  ] as const)("bounds GCP protobuf duration input %d", (elapsed, durationMs, latency) => {
+    const sample = accessState({
+      started: 0,
+      clock: () => elapsed,
+    });
+    const state = {
+      ...sample.state,
+      options: { ...sample.state.options, preset: "gcp" as const },
+    };
+
+    emitAccessRecord(state, "response", 200);
+
+    expect(sample.log.mock.calls[0]?.[0]).toMatchObject({
+      duration_ms: durationMs,
+      httpRequest: { latency },
+    });
   });
 
   it("clamps a negative duration to zero and omits an untrustworthy timeout status", () => {

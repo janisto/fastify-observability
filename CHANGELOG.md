@@ -70,6 +70,10 @@ The changes in this section target `2.0.0` and must not be published on the
 
 ### Fixed
 
+- Preserve framework-valid route parameter names beyond 64 characters, reject
+  non-ASCII or control-bearing `traceparent` fields, and safely fall back to
+  zero when elapsed time exceeds the GCP protobuf Duration range.
+
 - Enforced the `traceparent` input ceiling in UTF-8 bytes and retained an
   authoritative committed response status when a timeout terminates the body.
 - Preserved sampling while omitting the Level 2 random flag for unknown future
