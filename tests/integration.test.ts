@@ -77,7 +77,7 @@ describe("Fastify integration", () => {
       operation_id: "health_check",
       duration_ms: 12.5,
       status: 200,
-      httpRequest: { requestMethod: "GET", status: 200, latency: "0.0125s" },
+      httpRequest: { requestMethod: "GET", status: 200, latency: "0.012500s" },
     });
     for (const privateField of ["path", "peer_ip", "remote_ip", "user_agent"]) {
       expect(records[2]?.[privateField]).toBeUndefined();
@@ -186,6 +186,72 @@ describe("Fastify integration", () => {
     expect(access?.["logging.googleapis.com/spanId"]).toBeUndefined();
     expect(access?.["httpRequest"]).toMatchObject({ requestUrl: "/items/42", status: 200 });
     expect(accessRecords(records)).toHaveLength(1);
+  });
+
+  it("drops reserved application fields before Pino can duplicate or forge them", async () => {
+    const { app, lines, records } = await buildTestApp({}, { preset: "azure" });
+    apps.push(app);
+    app.get("/guarded", (request) => {
+      request.log.info(
+        {
+          request_id: "spoofed-request",
+          trace_id: "00000000000000000000000000000001",
+          operation_Id: "spoofed-operation",
+          method: "DELETE",
+          status: 599,
+          message: "spoofed-message",
+          "logging.googleapis.com/future": "spoofed-provider",
+          "obs.internal": true,
+          tenant_id: "tenant-1",
+        },
+        "guarded application event",
+      );
+      request.log.info({
+        message: "object-owned application message",
+        request_id: "spoofed-request",
+        tenant_id: "tenant-2",
+      });
+      return { ok: true };
+    });
+
+    const response = await app.inject({
+      url: "/guarded",
+      headers: { "x-request-id": "canonical-request", traceparent: TRACEPARENT },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const application = records.find((record) => record.message === "guarded application event");
+    expect(application).toMatchObject({
+      request_id: "canonical-request",
+      trace_id: TRACE_ID,
+      operation_Id: TRACE_ID,
+      tenant_id: "tenant-1",
+    });
+    for (const key of ["method", "status", "logging.googleapis.com/future", "obs.internal"]) {
+      expect(application?.[key]).toBeUndefined();
+    }
+    const line = lines.find((candidate) => candidate.includes('"guarded application event"'));
+    expect(line).toBeDefined();
+    for (const key of ["request_id", "trace_id", "operation_Id", "message", "tenant_id"]) {
+      expect(topLevelKeyOccurrences(line ?? "", key)).toBe(1);
+    }
+    for (const key of ["method", "status", "logging.googleapis.com/future", "obs.internal"]) {
+      expect(topLevelKeyOccurrences(line ?? "", key)).toBe(0);
+    }
+    const objectMessage = records.find((record) => record.message === "object-owned application message");
+    expect(objectMessage).toMatchObject({
+      message: "object-owned application message",
+      request_id: "canonical-request",
+      tenant_id: "tenant-2",
+    });
+    const objectMessageLine = lines.find((candidate) => candidate.includes('"object-owned application message"'));
+    expect(objectMessageLine).toBeDefined();
+    for (const key of ["message", "request_id", "tenant_id"]) {
+      expect(topLevelKeyOccurrences(objectMessageLine ?? "", key)).toBe(1);
+    }
+    expect(accessRecords(records)).toEqual([
+      expect.objectContaining({ method: "GET", status: 200, request_id: "canonical-request" }),
+    ]);
   });
 
   it("uses one aligned set of custom request, response, and trace headers", async () => {
@@ -403,6 +469,75 @@ describe("Fastify integration", () => {
       accessRecords(records)[0],
     ]) {
       expect(record).toMatchObject({ trace_flags: "03", trace_sampled: true, trace_id_random: true });
+    }
+  });
+
+  it.each([
+    ["aws", { xray_trace_id: `1-${TRACE_ID.slice(0, 8)}-${TRACE_ID.slice(8)}` }, ["operation_Id"]],
+    ["azure", { operation_Id: TRACE_ID, operation_ParentId: PARENT_ID }, ["xray_trace_id"]],
+  ] as const)("composes the %s provider fields with explicit Level 2 correlation", async (preset, expected, absent) => {
+    const { app, records } = await buildTestApp({ traceContextLevel: 2 }, { preset });
+    apps.push(app);
+    app.get("/", (request) => {
+      request.log.info("handler");
+      return { ok: true };
+    });
+
+    const response = await app.inject({
+      url: "/",
+      headers: { "x-request-id": "trace-request", traceparent: `00-${TRACE_ID}-${PARENT_ID}-03` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    for (const record of [records.find((candidate) => candidate.message === "handler"), accessRecords(records)[0]]) {
+      expect(record).toMatchObject({
+        request_id: "trace-request",
+        correlation_id: TRACE_ID,
+        trace_flags: "03",
+        trace_sampled: true,
+        trace_id_random: true,
+        ...expected,
+      });
+      for (const key of absent) {
+        expect(record?.[key]).toBeUndefined();
+      }
+    }
+  });
+
+  it.each([
+    "aws",
+    "azure",
+  ] as const)("omits %s provider correlation when duplicate traceparent lines are ambiguous", async (preset) => {
+    const { app, records } = await buildTestApp({ traceContextLevel: 2 }, { preset });
+    apps.push(app);
+    app.get("/", (request) => {
+      request.log.info("handler");
+      return { ok: true };
+    });
+
+    const response = await app.inject({
+      url: "/",
+      headers: {
+        "x-request-id": "duplicate-trace",
+        traceparent: [`00-${TRACE_ID}-${PARENT_ID}-03`, "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    for (const record of [records.find((candidate) => candidate.message === "handler"), accessRecords(records)[0]]) {
+      expect(record).toMatchObject({ request_id: "duplicate-trace", correlation_id: "duplicate-trace" });
+      for (const key of [
+        "trace_id",
+        "parent_id",
+        "trace_flags",
+        "trace_sampled",
+        "trace_id_random",
+        "xray_trace_id",
+        "operation_Id",
+        "operation_ParentId",
+      ]) {
+        expect(record?.[key]).toBeUndefined();
+      }
     }
   });
 
@@ -785,6 +920,74 @@ describe("Fastify integration", () => {
     expect(accessRecords(records)).toHaveLength(0);
     expect(diagnosticRecords(records)).toHaveLength(0);
     expect(stderr).toHaveBeenCalledOnce();
+  });
+
+  it("drops a formatter-failed access record without malformed output or response changes", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({
+        destination: stream,
+        serializers: {
+          incident: () => {
+            throw new Error("formatter secret");
+          },
+        },
+      }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    apps.push(app);
+    await app.register(fastifyObservability, { extraFields: () => ({ incident: "must-not-serialize" }) });
+    app.get("/", () => ({ ok: true }));
+
+    const response = await app.inject("/");
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true });
+    expect(accessRecords(stream.records)).toHaveLength(0);
+    expect(diagnosticKinds(stream.records)).toEqual(["logger"]);
+    for (const line of stream.lines) {
+      expect(() => JSON.parse(line)).not.toThrow();
+    }
+    expect(stream.lines.join("\n")).not.toContain("formatter secret");
+    expect(stream.lines.join("\n")).not.toContain("must-not-serialize");
+  });
+
+  it("preserves the original handler error when access formatting fails", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({
+        destination: stream,
+        serializers: {
+          incident: () => {
+            throw new Error("formatter failed");
+          },
+        },
+      }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    apps.push(app);
+    await app.register(fastifyObservability, { extraFields: () => ({ incident: "checkout" }) });
+    const sentinel = new Error("application sentinel");
+    let observed: unknown;
+    app.setErrorHandler((error, _request, reply) => {
+      observed = error;
+      return reply.code(418).send({ handled: true });
+    });
+    app.get("/", () => {
+      throw sentinel;
+    });
+
+    const response = await app.inject("/");
+
+    expect(observed).toBe(sentinel);
+    expect(response.statusCode).toBe(418);
+    expect(response.json()).toEqual({ handled: true });
+    expect(accessRecords(stream.records)).toHaveLength(0);
+    expect(diagnosticKinds(stream.records)).toEqual(["logger"]);
   });
 
   it("serializes supported Pino bindings exactly once in the raw access line", async () => {

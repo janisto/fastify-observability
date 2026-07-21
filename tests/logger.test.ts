@@ -32,7 +32,7 @@ describe("canonical Pino logger", () => {
     });
     const logger = createObservabilityLogger({ destination });
 
-    logger.info("first\nlogical message");
+    logger.info("first ✓\nlogical message");
     logger.error("second message");
 
     expect(writes).toHaveLength(2);
@@ -46,7 +46,23 @@ describe("canonical Pino logger", () => {
       expect(Array.isArray(record)).toBe(false);
       return (record as { message: string }).message;
     });
-    expect(messages).toEqual(["first\nlogical message", "second message"]);
+    expect(messages).toEqual(["first ✓\nlogical message", "second message"]);
+  });
+
+  it("keeps concurrent NDJSON records atomic", async () => {
+    const stream = new JsonLineStream();
+    const logger = createObservabilityLogger({ destination: stream });
+    const writes = Array.from({ length: 200 }, (_, index) =>
+      Promise.resolve().then(() => logger.info({ record_id: `record-${index}` }, "concurrent")),
+    );
+
+    await Promise.all(writes);
+
+    expect(stream.lines).toHaveLength(200);
+    expect(new Set(stream.records.map((record) => record["record_id"]))).toEqual(
+      new Set(Array.from({ length: 200 }, (_, index) => `record-${index}`)),
+    );
+    expect(stream.records.every((record) => record["message"] === "concurrent")).toBe(true);
   });
 
   it("owns the envelope and preserves nested bindings without duplicate top-level names", () => {
@@ -57,7 +73,7 @@ describe("canonical Pino logger", () => {
       base: { component: "catalog", service: { name: "api", labels: ["public"] } },
       destination: stream,
     });
-    const child = logger.child({ request_id: "fixed" });
+    const child = logger.child({ tenant_id: "fixed" });
     expect(logger.bindings()).toMatchObject({
       component: "catalog",
       service: { name: "api", labels: ["public"] },
@@ -65,7 +81,7 @@ describe("canonical Pino logger", () => {
     expect(child.bindings()).toMatchObject({
       component: "catalog",
       service: { name: "api", labels: ["public"] },
-      request_id: "fixed",
+      tenant_id: "fixed",
     });
     child.info({ item_id: "42" }, "item loaded");
 
@@ -75,14 +91,14 @@ describe("canonical Pino logger", () => {
       message: "item loaded",
       component: "catalog",
       service: { name: "api", labels: ["public"] },
-      request_id: "fixed",
+      tenant_id: "fixed",
       item_id: "42",
     });
     const line = stream.lines[0];
     if (line === undefined) {
       throw new Error("expected one raw Pino line");
     }
-    for (const key of ["severity", "message", "component", "service", "request_id", "item_id"]) {
+    for (const key of ["severity", "message", "component", "service", "tenant_id", "item_id"]) {
       expect(topLevelKeyOccurrences(line, key)).toBe(1);
     }
     expect(topLevelKeyOccurrences(line, "msg")).toBe(0);
@@ -91,14 +107,14 @@ describe("canonical Pino logger", () => {
 
   it("blocks binding mutation and repeated bindings on every canonical child", () => {
     const logger = createObservabilityLogger({ destination: new JsonLineStream() });
-    const child = logger.child({ request_id: "fixed" });
+    const child = logger.child({ tenant_id: "fixed" });
 
     expect(() =>
       (child as unknown as { setBindings(bindings: Record<string, unknown>): void }).setBindings({
         request_id: "changed",
       }),
     ).toThrow("do not allow setBindings");
-    expect(() => child.child({ request_id: "duplicate" })).toThrow('duplicate binding "request_id"');
+    expect(() => child.child({ tenant_id: "duplicate" })).toThrow('duplicate binding "tenant_id"');
     expect(() => logger.child({ tenant: "second" }).child({ tenant: "duplicate" })).toThrow(
       'duplicate binding "tenant"',
     );

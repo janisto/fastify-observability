@@ -3,7 +3,13 @@ import fp from "fastify-plugin";
 import type { Logger } from "pino";
 import { type AccessState, canonicalPeerIp, emitAccessRecord, observeStream, requestUserAgent } from "./access.js";
 import { createRequestObservability, normalizeOptions } from "./context.js";
-import { bindingValuesEqual, canonicalLoggerProfile, createCanonicalChild, PROTECTED_LOG_FIELDS } from "./logger.js";
+import {
+  bindingValuesEqual,
+  canonicalLoggerProfile,
+  createCanonicalChild,
+  isProtectedLogField,
+  markTrustedLogFields,
+} from "./logger.js";
 import { correlationFields } from "./presets.js";
 import { consumeRequestIdHandshake } from "./request-id.js";
 import type { FastifyObservabilityOptions, RequestObservability } from "./types.js";
@@ -59,7 +65,7 @@ function snapshotBindings(logger: PinoLogger): Record<string, unknown> {
 
 function validateRootBindings(bindings: Readonly<Record<string, unknown>>): void {
   for (const key of Object.keys(bindings)) {
-    if (PROTECTED_LOG_FIELDS.has(key)) {
+    if (isProtectedLogField(key)) {
       throw new Error(`fastify-observability reserves Pino base binding "${key}"`);
     }
   }
@@ -134,7 +140,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       }
       diagnostics.add(kind);
       try {
-        rootLogger.warn({ observability_diagnostic: kind }, `fastify-observability: ${message}`);
+        rootLogger.warn(markTrustedLogFields({ observability_diagnostic: kind }), `fastify-observability: ${message}`);
         return;
       } catch {
         // Fall through only when the configured Pino logger itself failed synchronously.

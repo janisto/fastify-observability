@@ -1,9 +1,8 @@
-import { validateHeaderValue } from "node:http";
 import { isIP } from "node:net";
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from "fastify";
 import type { NormalizedOptions } from "./context.js";
-import { bindingValuesEqual, PROTECTED_LOG_FIELDS } from "./logger.js";
-import { rawHeaderValues } from "./request-id.js";
+import { bindingValuesEqual, isProtectedLogField, markTrustedLogFields, PROTECTED_LOG_FIELDS } from "./logger.js";
+import { isNativeFieldContent, rawHeaderValues } from "./request-id.js";
 import type { AccessLogLevel } from "./types.js";
 
 export type TerminalReason = "response" | "timeout" | "client_disconnect" | "body_error";
@@ -204,12 +203,7 @@ export function requestUserAgent(request: FastifyRequest): string | undefined {
   if (value === undefined || value.length === 0) {
     return undefined;
   }
-  try {
-    validateHeaderValue("user-agent", value);
-    return value;
-  } catch {
-    return undefined;
-  }
+  return isNativeFieldContent(value) ? value : undefined;
 }
 
 function durationMilliseconds(state: AccessState): number {
@@ -237,7 +231,12 @@ function protobufDuration(durationMs: number): string | undefined {
     seconds += 1;
     nanos = 0;
   }
-  return nanos === 0 ? `${seconds}s` : `${seconds}.${String(nanos).padStart(9, "0").replace(/0+$/, "")}s`;
+  if (nanos === 0) {
+    return `${seconds}s`;
+  }
+  const precision = nanos % 1_000_000 === 0 ? 3 : nanos % 1_000 === 0 ? 6 : 9;
+  const fraction = String(nanos / 10 ** (9 - precision)).padStart(precision, "0");
+  return `${seconds}.${fraction}s`;
 }
 
 function defaultLevel(status: number): AccessLogLevel {
@@ -284,7 +283,7 @@ function copyExtraFields(
     }
     const custom = Object.create(null) as Record<string, unknown>;
     for (const key of Object.keys(result)) {
-      if (RESERVED_FIELDS.has(key)) {
+      if (RESERVED_FIELDS.has(key) || isProtectedLogField(key)) {
         continue;
       }
       const value = result[key];
@@ -462,7 +461,7 @@ export function emitAccessRecord(state: AccessState, reason: TerminalReason, sta
       return;
     }
     const fields = accessFields(state, reason, status, loggerBindings);
-    state.logger[level](fields, "request completed");
+    state.logger[level](markTrustedLogFields(fields), "request completed");
   } catch {
     state.diagnose("logger", "access log emission failed; the HTTP response was preserved");
   }

@@ -49,13 +49,23 @@ function validIncomingRequestId(value: string, validateIncoming: ((value: string
   if (validateIncoming === undefined) {
     return isValidRequestId(value);
   }
-  try {
-    validateHeaderValue("x-request-id", value);
-  } catch {
+  if (!isNativeFieldContent(value)) {
     return false;
   }
   try {
-    return value.length > 0 && validateIncoming(value) === true;
+    return validateIncoming(value) === true;
+  } catch {
+    return false;
+  }
+}
+
+export function isNativeFieldContent(value: string): boolean {
+  if (value.length === 0 || /^[\t ]|[\t ]$/.test(value)) {
+    return false;
+  }
+  try {
+    validateHeaderValue("x-request-id", value);
+    return true;
   } catch {
     return false;
   }

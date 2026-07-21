@@ -42,6 +42,8 @@ The changes in this section target `2.0.0` and must not be published on the
 
 ### Changed
 
+- Expanded the provider-neutral basic example with the Level 1 default, an
+  explicit Level 2 application factory, and behavioral output tests.
 - Removed v1 compatibility shims from the plugin options; unknown legacy
   options now fail construction like every other unsupported key.
 - Set package metadata to `2.0.0` so local package validation cannot produce a
@@ -70,6 +72,13 @@ The changes in this section target `2.0.0` and must not be published on the
 
 ### Fixed
 
+- Prevented plain application log fields from overriding or duplicating
+  reserved request, access, envelope, and provider fields in raw NDJSON.
+- Emit GCP `httpRequest.latency` with canonical ProtoJSON fractional widths:
+  0, 3, 6, or 9 digits according to the required precision.
+- Apply the RFC 9110 field-content boundary before custom request-ID validation,
+  admitting internal space, tab, or a comma in one field-line; direct synthetic
+  edge-whitespace values remain a native safety check after real HTTP parsing.
 - Preserve framework-valid native route forms, HTTP-safe opaque future
   `traceparent` suffixes without an invented length cap, custom-admitted native
   request IDs, HTAB User-Agent values, and nonempty static operation IDs.

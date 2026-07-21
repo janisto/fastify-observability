@@ -227,9 +227,11 @@ Unknown options are rejected instead of being silently ignored.
 `validateIncoming`. `validateIncoming` applies only to caller-provided IDs; it
 does not reject an application generator's output or the package fallback.
 Without it, callers must pass the 1–128 ASCII URI-unreserved baseline. With it,
-the application may admit any nonempty value that Node accepts as an HTTP
-header value, including punctuation or values longer than 128 bytes. Generated
-and fallback IDs always retain the package baseline.
+the application may admit a broader RFC 9110 field-content value that Node can
+round-trip exactly through the response header and UTF-8 JSON writer, including
+punctuation, internal space or tab, and values longer than 128 bytes. Edge
+whitespace and unsafe framing are rejected before the callback. Generated and
+fallback IDs always retain the package baseline.
 
 Missing, empty, duplicate, or policy-invalid incoming values are replaced. A
 custom generator is tried twice and then failure-contained with a package
@@ -272,6 +274,12 @@ Level 2 is explicit and immutable after plugin registration:
 await app.register(fastifyObservability, { traceContextLevel: 2 });
 ```
 
+The provider-neutral [`examples/basic/app.ts`](https://github.com/janisto/fastify-observability/blob/main/examples/basic/app.ts) leaves
+the trace-level option unset for its default Level 1 `app`. To enable Level 2,
+use its `createLevel2App()` factory, which passes `traceContextLevel: 2`.
+Native tests send flags `03` through the default and Level 2 paths and verify
+that only Level 2 emits `trace_id_random`.
+
 Both levels preserve `trace_flags` and derive `trace_sampled` from bit zero.
 For version `00`, Level 2 additionally exposes `traceIdRandom` on the request
 trace context and emits `trace_id_random` from bit one. Level 1 deliberately
@@ -292,17 +300,22 @@ same one-shot terminal guard.
 
 | Field | Meaning |
 | --- | --- |
-| `method` | HTTP method |
+| `method` | Fastify/Node parsed HTTP method |
 | `path` | Opt-in concrete escaped path without a query string |
 | `path_template` | Canonical matched template (`{name}` and `{*path}`); omitted for a normal 404 or an unsafe/ambiguous native form |
 | `operation_id` | Explicit `schema.operationId` only |
 | `status` | Final status when trustworthy |
 | `duration_ms` | Non-negative monotonic duration including streaming |
 | `peer_ip` | Opt-in direct socket peer; forwarded and proxy-derived values are ignored |
-| `user_agent` | Opt-in single unambiguous raw User-Agent value |
+| `user_agent` | Opt-in single unambiguous UTF-8 RFC 9110 field-content value |
 | `terminal_reason` | `timeout`, `client_disconnect`, or `body_error` |
 | `err` | Opt-in observed `Error` (`captureError: true`), including standard type, message, and stack |
 | `httpRequest` | GCP HTTP request object, on the GCP preset only |
+
+The Node HTTP server rejects lowercase extension tokens such as `m-SEARCH`
+before Fastify creates a request object; Node HTTP clients can also canonicalize
+recognized methods before transmission. The package therefore records only the
+framework value and does not claim access to rejected wire spelling.
 
 Queries, bodies, cookies, authorization, forwarded IPs, and arbitrary headers
 are never logged. Use `path_template` for low-cardinality aggregation; opt-in
@@ -348,10 +361,11 @@ show only the final value. Pino documents this
 The public `bindings()` method is necessary for inspection, but it is not
 sufficient proof by itself.
 
-For package terminal records, the supported configuration guarantees that
-every emitted package, provider, envelope, access, base, and extra field has
-exactly one top-level occurrence. Fields explicitly removed by root redaction
-are absent rather than duplicated:
+For records emitted through the canonical logger on the exact supported path
+and outside the opaque integration preconditions below, each package,
+provider, envelope, access, base, and extra field has exactly one top-level
+occurrence. Fields explicitly removed by root redaction are absent rather than
+duplicated:
 
 1. The factory rejects protected root bindings and uncontrolled envelope
    options.
@@ -364,15 +378,16 @@ are absent rather than duplicated:
    access logging.
 5. An application extra field equal to a stable root binding is reused; a
    conflicting extra field is omitted with one diagnostic.
-6. Tests inspect the raw JSON line before parsing it.
+6. Plain application event objects drop reserved package, access, provider,
+   envelope, and reserved-prefix fields before Pino serializes them.
+7. Tests inspect the raw JSON line before parsing it.
 
-This guarantee covers records emitted by this package. Application log calls
-must not pass a key already bound on `request.log`; Pino itself permits that and
-will serialize both names. Replacing or mutating the logger, bypassing its
-guarded methods through Pino internals, custom or route-specific
-`childLoggerFactory` behavior, and downstream transports that rewrite records
-are outside the contract. The exact default Fastify child logger shape is the
-supported path.
+Opaque non-plain objects, serializer internals, and application-supplied
+pre-bound child fields cannot be safely rewritten and remain integration
+preconditions. Replacing or mutating the logger, bypassing its guarded methods
+through Pino internals, custom or route-specific `childLoggerFactory` behavior,
+and downstream transports that rewrite records are outside the contract. The
+exact default Fastify child logger shape is the supported path.
 
 ## Cloud presets
 

@@ -118,7 +118,11 @@ describe("access helpers", () => {
     const withHeaders = (rawHeaders: string[]) => ({ raw: { rawHeaders } }) as unknown as FastifyRequest;
 
     expect(requestUserAgent(withHeaders(["User-Agent", "catalog-client/1.0"]))).toBe("catalog-client/1.0");
+    expect(requestUserAgent(withHeaders(["User-Agent", "agent/1 component/2"]))).toBe("agent/1 component/2");
     expect(requestUserAgent(withHeaders(["User-Agent", "agent\tcomment"]))).toBe("agent\tcomment");
+    expect(requestUserAgent(withHeaders(["User-Agent", " "]))).toBeUndefined();
+    expect(requestUserAgent(withHeaders(["User-Agent", " catalog-client/1.0"]))).toBeUndefined();
+    expect(requestUserAgent(withHeaders(["User-Agent", "catalog-client/1.0 "]))).toBeUndefined();
     expect(requestUserAgent(withHeaders(["User-Agent", "first", "user-agent", "second"]))).toBeUndefined();
     expect(requestUserAgent(withHeaders(["User-Agent", ""]))).toBeUndefined();
     expect(requestUserAgent(withHeaders(["User-Agent", "agent/1.0\nforged"]))).toBeUndefined();
@@ -274,11 +278,27 @@ describe("access helpers", () => {
         requestMethod: "GET",
         requestUrl: "/resource",
         status: 204,
-        latency: "1.5s",
+        latency: "1.500s",
         remoteIp: "203.0.113.8",
         userAgent: "catalog-client/1.0",
       },
     });
+  });
+
+  it.each([
+    [10, "0.010s"],
+    [12.5, "0.012500s"],
+  ] as const)("uses canonical ProtoJSON fractional width for %d ms", (durationMs, latency) => {
+    const sample = accessState({ started: 0, clock: () => durationMs });
+    const state = {
+      ...sample.state,
+      options: { ...sample.state.options, preset: "gcp" as const },
+    };
+
+    emitAccessRecord(state, "response", 200);
+
+    const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect((fields["httpRequest"] as Record<string, unknown>)["latency"]).toBe(latency);
   });
 
   it("rounds fractional milliseconds to the nearest protobuf nanosecond", () => {

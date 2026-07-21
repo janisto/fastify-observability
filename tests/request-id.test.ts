@@ -56,6 +56,22 @@ describe("request IDs", () => {
     expect(validateIncoming).toHaveBeenNthCalledWith(4, "other");
   });
 
+  it("applies the RFC field-content boundary before a custom validator", () => {
+    const validateIncoming = vi.fn(() => true);
+    const generator = createRequestIdGenerator({ validateIncoming, generate: () => "generated" });
+
+    expect(generator(request(["x-request-id", "tenant request"]))).toBe("tenant request");
+    expect(generator(request(["x-request-id", "tenant\trequest"]))).toBe("tenant\trequest");
+    expect(generator(request(["x-request-id", "tenant,request"]))).toBe("tenant,request");
+    expect(generator(request(["x-request-id", " tenant"]))).toBe("generated");
+    expect(generator(request(["x-request-id", "tenant\t"]))).toBe("generated");
+
+    expect(validateIncoming).toHaveBeenCalledTimes(3);
+    expect(validateIncoming).toHaveBeenNthCalledWith(1, "tenant request");
+    expect(validateIncoming).toHaveBeenNthCalledWith(2, "tenant\trequest");
+    expect(validateIncoming).toHaveBeenNthCalledWith(3, "tenant,request");
+  });
+
   it("returns a valid custom ID when generation recovers on the second attempt", () => {
     const generate = vi
       .fn<() => string>()

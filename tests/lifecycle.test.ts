@@ -1,5 +1,6 @@
 import { get as httpGet, request as httpRequest } from "node:http";
 import { connect as connectHttp2, type IncomingHttpHeaders } from "node:http2";
+import { connect as connectTcp } from "node:net";
 import { Readable } from "node:stream";
 import Fastify, { LogController } from "fastify";
 import fastifyObservability, {
@@ -50,6 +51,35 @@ async function waitForAccessRecords(stream: JsonLineStream, expected: number) {
 }
 
 describe("real network lifecycle", () => {
+  it("rejects a lowercase extension method before Fastify constructs a request", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({ destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    const parserError = new Promise<string | undefined>((resolve) => {
+      app.server.once("clientError", (error) => resolve((error as NodeJS.ErrnoException).code));
+    });
+    await new Promise<void>((resolve, reject) => {
+      const socket = connectTcp({ host: "127.0.0.1", port: serverPort(app) }, () => {
+        socket.write("m-SEARCH /extension-search HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+      });
+      socket.setTimeout(1_000, () => socket.destroy(new Error("raw method request timed out")));
+      socket.on("data", () => undefined);
+      socket.once("error", reject);
+      socket.once("close", () => resolve());
+    });
+
+    expect(await parserError).toBe("HPE_INVALID_METHOD");
+    expect(accessRecords(stream.records)).toEqual([]);
+  });
+
   it("replaces duplicate and invalid request IDs before response and terminal output", async () => {
     const stream = new JsonLineStream();
     const generated = ["duplicate-replaced", "generated-safe"];
