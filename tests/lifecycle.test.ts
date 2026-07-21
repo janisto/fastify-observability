@@ -1,8 +1,8 @@
 import { get as httpGet, request as httpRequest } from "node:http";
 import { connect as connectHttp2, type IncomingHttpHeaders } from "node:http2";
 import { connect as connectTcp } from "node:net";
-import { Readable } from "node:stream";
-import Fastify, { LogController } from "fastify";
+import { PassThrough, Readable } from "node:stream";
+import Fastify, { LogController, type onSendHookHandler } from "fastify";
 import fastifyObservability, {
   createObservabilityLogger,
   createRequestIdGenerator,
@@ -505,7 +505,7 @@ describe("real network lifecycle", () => {
     }
   });
 
-  it("observes a stream installed by a later route onSend hook", async () => {
+  it("observes a failing stream installed by a later onRoute hook", async () => {
     const stream = new JsonLineStream();
     const app = Fastify({
       loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
@@ -515,25 +515,29 @@ describe("real network lifecycle", () => {
     });
     openApps.push(app);
     await app.register(fastifyObservability, { captureError: true });
-    app.get(
-      "/later-stream",
-      {
-        onSend: (_request, reply, _payload, next) => {
-          let started = false;
-          const body = new Readable({
-            read() {
-              if (started) return;
-              started = true;
-              this.push("partial");
-              setTimeout(() => this.destroy(new Error("later stream exploded")), 10);
-            },
-          });
-          reply.type("text/plain");
-          next(null, body);
-        },
-      },
-      () => "original",
-    );
+    app.addHook("onRoute", (routeOptions) => {
+      const installFailingStream: onSendHookHandler = (_request, reply, _payload, next) => {
+        let started = false;
+        const body = new Readable({
+          read() {
+            if (started) return;
+            started = true;
+            this.push("partial");
+            setTimeout(() => this.destroy(new Error("later stream exploded")), 10);
+          },
+        });
+        reply.type("text/plain");
+        next(null, body);
+      };
+      const existing = routeOptions.onSend;
+      routeOptions.onSend =
+        existing === undefined
+          ? installFailingStream
+          : Array.isArray(existing)
+            ? [...existing, installFailingStream]
+            : [existing, installFailingStream];
+    });
+    app.get("/later-stream", () => "original");
     await app.listen({ host: "127.0.0.1", port: 0 });
 
     await new Promise<void>((resolve) => {
@@ -557,7 +561,65 @@ describe("real network lifecycle", () => {
     });
   });
 
-  it("does not blame the client when an unobservable not-found stream fails", async () => {
+  it("does not turn a completed-request disconnect into a discarded stream body error", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability, { captureError: true });
+    let enterReplacement: () => void = () => undefined;
+    const replacementEntered = new Promise<void>((resolve) => {
+      enterReplacement = resolve;
+    });
+    let releaseReplacement: () => void = () => undefined;
+    const replacementReleased = new Promise<void>((resolve) => {
+      releaseReplacement = resolve;
+    });
+    app.addHook("onRoute", (routeOptions) => {
+      const delayedReplacement: onSendHookHandler = async () => {
+        enterReplacement();
+        await replacementReleased;
+        return "healthy";
+      };
+      const existing = routeOptions.onSend;
+      routeOptions.onSend =
+        existing === undefined
+          ? delayedReplacement
+          : Array.isArray(existing)
+            ? [...existing, delayedReplacement]
+            : [existing, delayedReplacement];
+    });
+    let discarded: PassThrough | undefined;
+    app.get("/discarded-before-close", () => {
+      discarded = new PassThrough();
+      discarded.on("error", () => undefined);
+      return discarded;
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    const request = httpGet(`http://127.0.0.1:${serverPort(app)}/discarded-before-close`);
+    request.on("error", () => undefined);
+    try {
+      await replacementEntered;
+      discarded?.destroy(new Error("discarded stream"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      request.destroy();
+
+      const records = await waitForAccessRecords(stream, 1);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ level: 50, terminal_reason: "response_dropped" });
+      expect(records[0]?.["err"]).toBeUndefined();
+    } finally {
+      releaseReplacement();
+      request.destroy();
+    }
+  });
+
+  it("records a failing not-found response stream as a body error", async () => {
     const stream = new JsonLineStream();
     const app = Fastify({
       loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
@@ -596,7 +658,11 @@ describe("real network lifecycle", () => {
 
     const records = await waitForAccessRecords(stream, 1);
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ level: 50, status: 200, terminal_reason: "response_dropped" });
-    expect(records[0]?.["err"]).toBeUndefined();
+    expect(records[0]).toMatchObject({
+      level: 50,
+      status: 200,
+      terminal_reason: "body_error",
+      err: { message: "not-found stream failed" },
+    });
   });
 });

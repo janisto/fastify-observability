@@ -1,4 +1,4 @@
-import type { FastifyBaseLogger, FastifyPluginCallback, FastifyRequest, onSendHookHandler } from "fastify";
+import type { FastifyBaseLogger, FastifyPluginCallback, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import type { Logger } from "pino";
 import { type AccessState, canonicalPeerIp, emitAccessRecord, observeStream, requestUserAgent } from "./access.js";
@@ -244,6 +244,15 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
         ...(inspectLoggerBindings === undefined ? {} : { inspectLoggerBindings }),
       };
       (request as InternalRequest)[STATE] = state;
+      // The Writable `pipe` event identifies the source Fastify actually sends, after every onSend transformation.
+      const pipeListener = (source: unknown) => observeStream(state, source);
+      state.pipeListener = pipeListener;
+      try {
+        reply.raw.once("pipe", pipeListener);
+      } catch {
+        delete state.pipeListener;
+        diagnose("stream_listener", "response pipe observation failed; the response was preserved");
+      }
       const closeListener = () => {
         setImmediate(() => {
           if (!state.emitted && !reply.raw.writableFinished) {
@@ -266,23 +275,6 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
         state.error = error;
       }
       next();
-    });
-
-    fastify.addHook("onRoute", (routeOptions) => {
-      const finalObserver: onSendHookHandler = (request, _reply, payload, next) => {
-        const state = (request as InternalRequest)[STATE];
-        if (state !== undefined) {
-          observeStream(state, payload);
-        }
-        next(null, payload);
-      };
-      const existing = routeOptions.onSend;
-      routeOptions.onSend =
-        existing === undefined
-          ? finalObserver
-          : Array.isArray(existing)
-            ? [...existing, finalObserver]
-            : [existing, finalObserver];
     });
 
     fastify.addHook("onResponse", (request, reply, next) => {

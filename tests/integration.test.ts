@@ -1,5 +1,5 @@
 import { PassThrough, Readable } from "node:stream";
-import Fastify, { type FastifyBaseLogger, LogController } from "fastify";
+import Fastify, { type FastifyBaseLogger, LogController, type onSendHookHandler } from "fastify";
 import fastifyObservability, {
   createObservabilityLogger,
   createRequestIdGenerator,
@@ -814,6 +814,38 @@ describe("Fastify integration", () => {
     const access = accessRecords(records);
     expect(access).toHaveLength(1);
     expect(access[0]).toMatchObject({ status: 200, path_template: "/replaced-stream" });
+    expect(access[0]?.["terminal_reason"]).toBeUndefined();
+    expect(access[0]?.["err"]).toBeUndefined();
+  });
+
+  it("does not attribute a discarded stream failure added before a later onRoute transformation", async () => {
+    const { app, records } = await buildTestApp({ captureError: true });
+    apps.push(app);
+    app.addHook("onRoute", (routeOptions) => {
+      const replacement: onSendHookHandler = async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+        return "healthy";
+      };
+      const existing = routeOptions.onSend;
+      routeOptions.onSend =
+        existing === undefined
+          ? replacement
+          : Array.isArray(existing)
+            ? [...existing, replacement]
+            : [existing, replacement];
+    });
+    app.get("/late-replaced-stream", () => {
+      const discarded = new PassThrough();
+      discarded.on("error", () => undefined);
+      setTimeout(() => discarded.destroy(new Error("discarded stream")), 5);
+      return discarded;
+    });
+
+    const response = await app.inject("/late-replaced-stream");
+    expect(response).toMatchObject({ statusCode: 200, body: "healthy" });
+    const access = accessRecords(records);
+    expect(access).toHaveLength(1);
+    expect(access[0]).toMatchObject({ status: 200, path_template: "/late-replaced-stream" });
     expect(access[0]?.["terminal_reason"]).toBeUndefined();
     expect(access[0]?.["err"]).toBeUndefined();
   });

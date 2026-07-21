@@ -28,6 +28,7 @@ export interface AccessState {
   emitted: boolean;
   suppressAccess: boolean;
   closeListener?: () => void;
+  pipeListener?: (source: unknown) => void;
   stream?: StreamLike;
   streamErrorListener?: (error: Error) => void;
 }
@@ -421,6 +422,15 @@ export function cleanupListeners(state: AccessState): void {
       state.diagnose("close_listener_cleanup", "response close-listener cleanup failed");
     } finally {
       delete state.closeListener;
+    }
+  }
+  if (state.pipeListener !== undefined) {
+    try {
+      state.reply.raw.removeListener("pipe", state.pipeListener);
+    } catch {
+      state.diagnose("stream_listener_cleanup", "response pipe-listener cleanup failed");
+    } finally {
+      delete state.pipeListener;
     }
   }
   if (state.stream !== undefined && state.streamErrorListener !== undefined) {

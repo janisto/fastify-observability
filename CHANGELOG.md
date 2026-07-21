@@ -81,7 +81,9 @@ The changes in this section target `2.0.0` and must not be published on the
 - Invoke configured request-ID generators once before package-owned fallback,
   avoiding duplicate application callback side effects.
 - Classify ambiguous unfinished response closes as `response_dropped`, and
-  observe the final route payload after later `onSend` transformations.
+  observe only the response stream Fastify actually pipes after all `onSend`
+  transformations, so discarded payload failures cannot contaminate terminal
+  records.
 - Emit GCP `httpRequest.latency` with canonical ProtoJSON fractional widths:
   0, 3, 6, or 9 digits according to the required precision.
 - Apply the RFC 9110 field-content boundary before custom request-ID validation,

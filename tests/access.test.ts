@@ -385,6 +385,7 @@ describe("access helpers", () => {
 
   it("contains listener-cleanup failures and still emits the terminal record", () => {
     const closeListener = vi.fn();
+    const pipeListener = vi.fn();
     const streamErrorListener = vi.fn();
     const stateWithFailures = accessState({
       reply: {
@@ -395,6 +396,7 @@ describe("access helpers", () => {
         },
       } as unknown as FastifyReply,
       closeListener,
+      pipeListener,
       stream: {
         once: vi.fn(),
         removeListener: () => {
@@ -410,8 +412,10 @@ describe("access helpers", () => {
     expect(stateWithFailures.diagnose.mock.calls.map(([kind]) => kind)).toEqual([
       "close_listener_cleanup",
       "stream_listener_cleanup",
+      "stream_listener_cleanup",
     ]);
     expect(stateWithFailures.state.closeListener).toBeUndefined();
+    expect(stateWithFailures.state.pipeListener).toBeUndefined();
     expect(stateWithFailures.state.stream).toBeUndefined();
     expect(stateWithFailures.state.streamErrorListener).toBeUndefined();
   });
@@ -460,6 +464,7 @@ describe("access helpers", () => {
     const levelForStatus = vi.fn(() => "debug" as const);
     const extraFields = vi.fn(() => ({ unexpected: true }));
     const closeListener = vi.fn();
+    const pipeListener = vi.fn();
     const streamErrorListener = vi.fn();
     const stream = new EventEmitter();
     const suppressed = accessState({
@@ -467,10 +472,12 @@ describe("access helpers", () => {
       inspectLoggerBindings,
     });
     suppressed.state.reply.raw.on("close", closeListener);
+    suppressed.state.reply.raw.on("pipe", pipeListener);
     stream.on("error", streamErrorListener);
     const state = {
       ...suppressed.state,
       closeListener,
+      pipeListener,
       stream,
       streamErrorListener,
       options: { ...suppressed.state.options, levelForStatus, extraFields },
@@ -485,8 +492,10 @@ describe("access helpers", () => {
     expect(extraFields).not.toHaveBeenCalled();
     expect(suppressed.diagnose).not.toHaveBeenCalled();
     expect(state.reply.raw.listenerCount("close")).toBe(0);
+    expect(state.reply.raw.listenerCount("pipe")).toBe(0);
     expect(stream.listenerCount("error")).toBe(0);
     expect(state.closeListener).toBeUndefined();
+    expect(state.pipeListener).toBeUndefined();
     expect(state.stream).toBeUndefined();
     expect(state.streamErrorListener).toBeUndefined();
     expect(state.emitted).toBe(true);
