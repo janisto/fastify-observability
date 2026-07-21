@@ -5,7 +5,7 @@ import { bindingValuesEqual, isProtectedLogField, markTrustedLogFields, PROTECTE
 import { isNativeFieldContent, rawHeaderValues } from "./request-id.js";
 import type { AccessLogLevel } from "./types.js";
 
-export type TerminalReason = "response" | "timeout" | "client_disconnect" | "body_error";
+export type TerminalReason = "response" | "timeout" | "client_disconnect" | "response_dropped" | "body_error";
 
 interface AccessLogger extends FastifyBaseLogger {
   isLevelEnabled(level: AccessLogLevel): boolean;
@@ -38,7 +38,9 @@ interface StreamLike {
 }
 
 export const RESERVED_FIELDS = new Set([
-  ...PROTECTED_LOG_FIELDS,
+  ...[...PROTECTED_LOG_FIELDS].filter((key) =>
+    (["default", "gcp", "aws", "azure"] as const).every((preset) => isProtectedLogField(key, preset)),
+  ),
   "name",
   "logger",
   "req",
@@ -52,12 +54,18 @@ export const RESERVED_FIELDS = new Set([
 const ACCESS_LOG_LEVELS: readonly AccessLogLevel[] = ["debug", "info", "warn", "error"];
 
 export function requestPath(rawUrl: string | undefined): string | undefined {
-  if (rawUrl === undefined || !rawUrl.startsWith("/") || rawUrl.includes("#")) {
+  if (rawUrl === "*") {
+    return rawUrl;
+  }
+  if (rawUrl === undefined || !rawUrl.startsWith("/")) {
     return undefined;
   }
   const query = rawUrl.indexOf("?");
-  const path = query === -1 ? rawUrl : rawUrl.slice(0, query);
-  return /%(?![0-9A-Fa-f]{2})/.test(path) ? undefined : path;
+  const fragment = rawUrl.indexOf("#");
+  const delimiter = [query, fragment]
+    .filter((index) => index >= 0)
+    .reduce((first, index) => Math.min(first, index), rawUrl.length);
+  return rawUrl.slice(0, delimiter) || undefined;
 }
 
 export function canonicalPeerIp(candidate: string | undefined): string | undefined {
@@ -102,11 +110,14 @@ function splitRouteSegments(template: string): string[] {
 }
 
 export function canonicalRouteTemplate(nativeTemplate: string): string | undefined {
+  if (nativeTemplate.length === 0) {
+    return undefined;
+  }
   if (nativeTemplate === "*") {
     return "/{*path}";
   }
-  if (!nativeTemplate.startsWith("/") || nativeTemplate.includes("#")) {
-    return undefined;
+  if (!nativeTemplate.startsWith("/")) {
+    return nativeTemplate;
   }
   const canonical: string[] = [];
   const segments = splitRouteSegments(nativeTemplate);
@@ -118,27 +129,44 @@ export function canonicalRouteTemplate(nativeTemplate: string): string | undefin
       canonical.push("{*path}");
       continue;
     }
-    if (segment.startsWith(":")) {
+    if (segment.startsWith(":") && !segment.endsWith("?")) {
       const constraintStart = segment.indexOf("(");
       const name = segment.slice(1, constraintStart === -1 ? undefined : constraintStart);
       const constraint = constraintStart === -1 ? "" : segment.slice(constraintStart);
       if (
         name.length === 0 ||
-        [...name].some((character) => "/{}*?#:".includes(character)) ||
+        [...name].some((character) => "/{}*:".includes(character)) ||
         (constraint !== "" && !isRouteConstraint(constraint))
       ) {
-        return undefined;
+        return nativeTemplate;
       }
       canonical.push(`{${name}}`);
       continue;
     }
-    const staticSegment = segment.replaceAll("::", ":");
-    if (staticSegment.includes("::") || /(^|[^:]):([^:]|$)/.test(segment) || /[*{}?]/.test(segment)) {
-      return undefined;
+    const staticSegment = unescapeStaticRouteSegment(segment);
+    if (staticSegment === undefined || /[*{}]/.test(segment)) {
+      return nativeTemplate;
     }
     canonical.push(staticSegment);
   }
   return `/${canonical.join("/")}`;
+}
+
+function unescapeStaticRouteSegment(segment: string): string | undefined {
+  let result = "";
+  for (let index = 0; index < segment.length; index += 1) {
+    const character = segment[index];
+    if (character !== ":") {
+      result += character;
+      continue;
+    }
+    if (segment[index + 1] !== ":") {
+      return undefined;
+    }
+    result += ":";
+    index += 1;
+  }
+  return result;
 }
 
 function isRouteConstraint(value: string): boolean {
@@ -283,7 +311,7 @@ function copyExtraFields(
     }
     const custom = Object.create(null) as Record<string, unknown>;
     for (const key of Object.keys(result)) {
-      if (RESERVED_FIELDS.has(key) || isProtectedLogField(key)) {
+      if (RESERVED_FIELDS.has(key) || isProtectedLogField(key, state.options.preset)) {
         continue;
       }
       const value = result[key];
@@ -408,6 +436,16 @@ export function cleanupListeners(state: AccessState): void {
 }
 
 export function observeStream(state: AccessState, payload: unknown): void {
+  if (state.stream !== undefined && state.streamErrorListener !== undefined) {
+    try {
+      state.stream.removeListener("error", state.streamErrorListener);
+    } catch {
+      state.diagnose("stream_listener_cleanup", "response stream-listener cleanup failed");
+    } finally {
+      delete state.stream;
+      delete state.streamErrorListener;
+    }
+  }
   if (payload === null || typeof payload !== "object") {
     return;
   }

@@ -23,10 +23,11 @@ describe("access helpers", () => {
     ["/choice/:id([()a-z]+)", "/choice/{id}"],
     ["/files/*", "/files/{*path}"],
     ["*", "/{*path}"],
-    ["/items/:item_id?", undefined],
-    ["/items/:item_id(foo)tail", undefined],
-    ["/items/:item_id.:format", undefined],
+    ["/items/:item_id?", "/items/:item_id?"],
+    ["/items/:item_id(foo)tail", "/items/:item_id(foo)tail"],
+    ["/items/:item_id.:format", "/items/:item_id.:format"],
     ["/files/*/suffix", undefined],
+    ["/name::::verb", "/name::verb"],
   ])("canonicalizes the current Fastify route form %s", (input, expected) => {
     expect(canonicalRouteTemplate(input)).toBe(expected);
   });
@@ -34,10 +35,10 @@ describe("access helpers", () => {
   it.each([
     [undefined, undefined],
     ["", undefined],
-    ["*", undefined],
+    ["*", "*"],
     ["/items/a%3Fb?secret=yes", "/items/a%3Fb"],
-    ["/items/bad%2", undefined],
-    ["/items#fragment", undefined],
+    ["/items/bad%2", "/items/bad%2"],
+    ["/items#fragment", "/items"],
     ["https://attacker.example/path?secret=yes", undefined],
     ["http://[invalid", undefined],
   ])("uses only a valid origin-form path from %s", (input, expected) => {

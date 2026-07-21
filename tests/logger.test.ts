@@ -270,7 +270,6 @@ describe("canonical Pino logger", () => {
     "time",
     "timestamp",
     "level",
-    "severity",
     "msg",
     "message",
     "pid",
@@ -287,7 +286,6 @@ describe("canonical Pino logger", () => {
     "time",
     "timestamp",
     "level",
-    "severity",
     "msg",
     "message",
     "pid",
@@ -301,12 +299,6 @@ describe("canonical Pino logger", () => {
     "trace_flags",
     "trace_sampled",
     "trace_id_random",
-    "logging.googleapis.com/trace",
-    "logging.googleapis.com/trace_sampled",
-    "logging.googleapis.com/spanId",
-    "xray_trace_id",
-    "operation_Id",
-    "operation_ParentId",
     "method",
     "path",
     "path_template",
@@ -314,11 +306,9 @@ describe("canonical Pino logger", () => {
     "status",
     "duration_ms",
     "peer_ip",
-    "remote_ip",
     "user_agent",
     "terminal_reason",
     "err",
-    "httpRequest",
     "serializers",
     "formatters",
     "customLevels",
@@ -326,6 +316,77 @@ describe("canonical Pino logger", () => {
     expect(() => createObservabilityLogger({ base: { [key]: "unsafe" } })).toThrow(
       `reserves Pino base binding "${key}"`,
     );
+  });
+
+  it.each([
+    ["gcp", "severity"],
+    ["gcp", "httpRequest"],
+    ["gcp", "logging.googleapis.com/trace"],
+    ["gcp", "logging.googleapis.com/trace_sampled"],
+    ["aws", "xray_trace_id"],
+    ["azure", "operation_Id"],
+    ["azure", "operation_ParentId"],
+  ] as const)("rejects the %s-owned base binding %s", (preset, key) => {
+    expect(() => createObservabilityLogger({ preset, base: { [key]: "unsafe" } })).toThrow(
+      `reserves Pino base binding "${key}"`,
+    );
+  });
+
+  it.each([
+    ["default", "severity"],
+    ["default", "httpRequest"],
+    ["default", "logging.googleapis.com/trace"],
+    ["default", "xray_trace_id"],
+    ["gcp", "operation_Id"],
+    ["aws", "logging.googleapis.com/trace"],
+    ["azure", "xray_trace_id"],
+  ] as const)("preserves the %s-inactive base binding %s", (preset, key) => {
+    const stream = new JsonLineStream();
+    const logger = createObservabilityLogger({ preset, base: { [key]: "application-value" }, destination: stream });
+
+    logger.info("application event");
+
+    expect(stream.records[0]?.[key]).toBe("application-value");
+  });
+
+  it("preserves profile-shaped child bindings that Pino treats as ordinary fields", () => {
+    const stream = new JsonLineStream();
+    const logger = createObservabilityLogger({ preset: "gcp", destination: stream });
+
+    logger.child({ xray_trace_id: "application-trace" }).info("child event");
+
+    const defaultLogger = createObservabilityLogger({ destination: stream });
+    defaultLogger.child({ severity: "application-severity" }).info("default child event");
+
+    expect(stream.records[0]).toMatchObject({
+      severity: "INFO",
+      xray_trace_id: "application-trace",
+    });
+    expect(stream.records[1]).toMatchObject({ level: 30, severity: "application-severity" });
+  });
+
+  it("preserves non-owned provider-looking and custom base bindings", () => {
+    const stream = new JsonLineStream();
+    const logger = createObservabilityLogger({
+      base: {
+        "logging.googleapis.com/spanId": "application-span",
+        "logging.googleapis.com/future": "future-value",
+        remote_ip: "application-value",
+        "obs.component": "catalog",
+        _obs_internal: "application-value",
+      },
+      destination: stream,
+    });
+
+    logger.info("application event");
+
+    expect(stream.records[0]).toMatchObject({
+      "logging.googleapis.com/spanId": "application-span",
+      "logging.googleapis.com/future": "future-value",
+      remote_ip: "application-value",
+      "obs.component": "catalog",
+      _obs_internal: "application-value",
+    });
   });
 
   it.each([
@@ -525,8 +586,6 @@ describe("canonical Pino logger", () => {
     '[ "message" ]',
     "err",
     "[err]",
-    "httpRequest",
-    '["httpRequest"]',
     "[*]",
     "[ * ]",
     '["*"]',
@@ -535,6 +594,10 @@ describe("canonical Pino logger", () => {
     ".*",
   ])("rejects protected root redaction path %s", (path) => {
     expect(() => createObservabilityLogger({ redact: [path] })).toThrow("does not allow redaction");
+  });
+
+  it.each(["httpRequest", '["httpRequest"]'])("rejects the GCP-owned root redaction path %s", (path) => {
+    expect(() => createObservabilityLogger({ preset: "gcp", redact: [path] })).toThrow("does not allow redaction");
   });
 
   it("rejects every redaction override on a canonical child", () => {

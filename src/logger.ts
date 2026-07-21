@@ -37,13 +37,18 @@ const GCP_SEVERITIES: Readonly<Record<string, string>> = Object.freeze({
 });
 
 const CANONICAL_MESSAGE_KEY = "message";
-const RESERVED_LOG_FIELD_PREFIXES = ["logging.googleapis.com/", "obs.", "_obs_"] as const;
 const TRUSTED_LOG_FIELDS = Symbol("fastify-observability.trusted-log-fields");
+const PROFILE_OWNED_LOG_FIELDS: Readonly<Record<LoggingPreset, ReadonlySet<string>>> = {
+  default: new Set(["level"]),
+  gcp: new Set(["severity", "httpRequest", "logging.googleapis.com/trace", "logging.googleapis.com/trace_sampled"]),
+  aws: new Set(["level", "xray_trace_id"]),
+  azure: new Set(["level", "operation_Id", "operation_ParentId"]),
+};
+const ALL_PROFILE_OWNED_LOG_FIELDS = new Set(Object.values(PROFILE_OWNED_LOG_FIELDS).flatMap((fields) => [...fields]));
 const CHILD_RESERVED_BINDINGS = new Set([
   "time",
   "timestamp",
   "level",
-  "severity",
   "msg",
   CANONICAL_MESSAGE_KEY,
   "pid",
@@ -71,7 +76,6 @@ export const PROTECTED_LOG_FIELDS = new Set([
   "trace_id_random",
   "logging.googleapis.com/trace",
   "logging.googleapis.com/trace_sampled",
-  "logging.googleapis.com/spanId",
   "xray_trace_id",
   "operation_Id",
   "operation_ParentId",
@@ -82,7 +86,6 @@ export const PROTECTED_LOG_FIELDS = new Set([
   "status",
   "duration_ms",
   "peer_ip",
-  "remote_ip",
   "user_agent",
   "terminal_reason",
   "err",
@@ -118,8 +121,28 @@ type NativeChild = (bindings: Bindings, options?: ChildLoggerOptions) => Logger;
 
 const profiles = new WeakMap<object, ObservabilityLoggerProfile>();
 
-export function isProtectedLogField(key: string): boolean {
-  return PROTECTED_LOG_FIELDS.has(key) || RESERVED_LOG_FIELD_PREFIXES.some((prefix) => key.startsWith(prefix));
+export function isProtectedLogField(key: string, preset: LoggingPreset): boolean {
+  return (
+    PROTECTED_LOG_FIELDS.has(key) &&
+    (!ALL_PROFILE_OWNED_LOG_FIELDS.has(key) || PROFILE_OWNED_LOG_FIELDS[preset].has(key))
+  );
+}
+
+const APPLICATION_EVENT_FIELDS = new Set([
+  "method",
+  "path",
+  "path_template",
+  "operation_id",
+  "status",
+  "duration_ms",
+  "peer_ip",
+  "user_agent",
+  "terminal_reason",
+  "httpRequest",
+]);
+
+function isProtectedApplicationLogField(key: string, preset: LoggingPreset): boolean {
+  return isProtectedLogField(key, preset) && !APPLICATION_EVENT_FIELDS.has(key);
 }
 
 export function markTrustedLogFields<T extends Record<string, unknown>>(fields: T): T {
@@ -127,7 +150,7 @@ export function markTrustedLogFields<T extends Record<string, unknown>>(fields: 
   return fields;
 }
 
-function filterApplicationLogFields(value: unknown, hasExplicitMessage: boolean): unknown {
+function filterApplicationLogFields(value: unknown, hasExplicitMessage: boolean, preset: LoggingPreset): unknown {
   if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Error) {
     return value;
   }
@@ -140,7 +163,9 @@ function filterApplicationLogFields(value: unknown, hasExplicitMessage: boolean)
   }
   const keys = Object.keys(value);
   const isApplicationReserved = (key: string) =>
-    key !== "err" && !(key === CANONICAL_MESSAGE_KEY && !hasExplicitMessage) && isProtectedLogField(key);
+    key !== "err" &&
+    !(key === CANONICAL_MESSAGE_KEY && !hasExplicitMessage) &&
+    isProtectedApplicationLogField(key, preset);
   if (!keys.some(isApplicationReserved)) {
     return value;
   }
@@ -235,12 +260,15 @@ function validateTransport(profile: ObservabilityLoggerProfile, transport: Logge
   }
 }
 
-function validateBaseBindings(bindings: Readonly<Record<string, unknown>> | null | undefined): void {
+function validateBaseBindings(
+  bindings: Readonly<Record<string, unknown>> | null | undefined,
+  preset: LoggingPreset,
+): void {
   if (bindings === null || bindings === undefined) {
     return;
   }
   for (const key of Object.keys(bindings)) {
-    if (isProtectedLogField(key) || PINO_IGNORED_BINDINGS.has(key)) {
+    if (key === "level" || isProtectedLogField(key, preset) || PINO_IGNORED_BINDINGS.has(key)) {
       throw new Error(`fastify-observability reserves Pino base binding "${key}"`);
     }
   }
@@ -251,7 +279,7 @@ interface RedactionTarget {
   readonly nested: boolean;
 }
 
-const DIRECTLY_REDACTABLE_PACKAGE_FIELDS = new Set(["path", "peer_ip", "remote_ip", "user_agent"]);
+const DIRECTLY_REDACTABLE_PACKAGE_FIELDS = new Set(["path", "peer_ip", "user_agent"]);
 const NESTED_REDACTABLE_PACKAGE_FIELDS = new Set(["err", "httpRequest"]);
 const REDACTION_PATH_SEGMENT = /[^.[\]]+|\[([^[]\]]*?)\]/;
 
@@ -273,12 +301,12 @@ function redactionTarget(path: string): RedactionTarget {
   return { root, nested: REDACTION_PATH_SEGMENT.test(remainder) };
 }
 
-function protectedRedactionPath(path: string): boolean {
+function protectedRedactionPath(path: string, preset: LoggingPreset): boolean {
   const { root, nested } = redactionTarget(path);
   if (root === "*") {
     return true;
   }
-  if (!isProtectedLogField(root)) {
+  if (!isProtectedLogField(root, preset)) {
     return false;
   }
   if (DIRECTLY_REDACTABLE_PACKAGE_FIELDS.has(root)) {
@@ -287,7 +315,7 @@ function protectedRedactionPath(path: string): boolean {
   return !(nested && NESTED_REDACTABLE_PACKAGE_FIELDS.has(root));
 }
 
-function validateRedaction(redact: LoggerOptions["redact"]): void {
+function validateRedaction(redact: LoggerOptions["redact"], preset: LoggingPreset): void {
   if (redact === undefined) {
     return;
   }
@@ -299,13 +327,18 @@ function validateRedaction(redact: LoggerOptions["redact"]): void {
     throw new TypeError("logger redact paths must be strings");
   }
   for (const path of paths) {
-    if (protectedRedactionPath(path)) {
+    if (protectedRedactionPath(path, preset)) {
       throw new Error(`fastify-observability does not allow redaction of protected field "${path}"`);
     }
   }
 }
 
-function validateSerializers(serializers: unknown, allowStandardError = false, allowReplaceableError = false): void {
+function validateSerializers(
+  serializers: unknown,
+  preset: LoggingPreset,
+  allowStandardError = false,
+  allowReplaceableError = false,
+): void {
   if (serializers === undefined) {
     return;
   }
@@ -322,7 +355,7 @@ function validateSerializers(serializers: unknown, allowStandardError = false, a
     if (key === "err" && ((allowStandardError && serializer === pino.stdSerializers.err) || allowReplaceableError)) {
       continue;
     }
-    if (isProtectedLogField(key)) {
+    if (isProtectedLogField(key, preset)) {
       throw new Error(`fastify-observability does not allow a serializer for protected field "${key}"`);
     }
   }
@@ -357,7 +390,7 @@ function isFastifyInitializationOptions(options: object): boolean {
   );
 }
 
-function normalizeChildOptions(options: unknown): ChildLoggerOptions | undefined {
+function normalizeChildOptions(options: unknown, preset: LoggingPreset): ChildLoggerOptions | undefined {
   if (options === undefined) {
     return undefined;
   }
@@ -375,7 +408,7 @@ function normalizeChildOptions(options: unknown): ChildLoggerOptions | undefined
   const fastifyInitialization = isFastifyInitializationOptions(options);
   const serializers = Reflect.get(options, "serializers");
   if (Object.hasOwn(options, "serializers")) {
-    validateSerializers(serializers, true, fastifyInitialization);
+    validateSerializers(serializers, preset, true, fastifyInitialization);
   }
   const level = Reflect.get(options, "level");
   if (level !== undefined && level !== null && level !== "" && (typeof level !== "string" || !LEVELS.has(level))) {
@@ -398,9 +431,9 @@ function normalizeChildOptions(options: unknown): ChildLoggerOptions | undefined
   return options as ChildLoggerOptions;
 }
 
-function freezeEffectiveSerializers(logger: Logger): void {
+function freezeEffectiveSerializers(logger: Logger, preset: LoggingPreset): void {
   const serializers: unknown = Reflect.get(logger, PINO_SERIALIZERS);
-  validateSerializers(serializers, true);
+  validateSerializers(serializers, preset, true);
   if (serializers !== null && typeof serializers === "object") {
     Object.freeze(serializers);
   }
@@ -415,7 +448,7 @@ function registerLogger(
   if (profiles.has(logger)) {
     return;
   }
-  freezeEffectiveSerializers(logger);
+  freezeEffectiveSerializers(logger, profile.preset);
   profiles.set(logger, profile);
   Object.defineProperties(logger, {
     child: {
@@ -423,7 +456,7 @@ function registerLogger(
       enumerable: false,
       writable: false,
       value: (bindings: unknown, options?: unknown) => {
-        const childOptions = normalizeChildOptions(options);
+        const childOptions = normalizeChildOptions(options, profile.preset);
         validatePublicChildBindings(logger, bindings);
         return Reflect.apply(nativeChild, logger, [bindings, childOptions]);
       },
@@ -473,9 +506,9 @@ export function createCanonicalChild(logger: Logger, bindings: Bindings): Logger
 export function createObservabilityLogger(options: ObservabilityLoggerOptions = {}): ObservabilityLogger {
   const profile = validateOptions(options);
   validateTransport(profile, options.transport);
-  validateBaseBindings(options.base);
-  validateRedaction(options.redact);
-  validateSerializers(options.serializers);
+  validateBaseBindings(options.base, profile.preset);
+  validateRedaction(options.redact, profile.preset);
+  validateSerializers(options.serializers, profile.preset);
 
   let nativeChild: NativeChild | undefined;
   const onChild = (child: Logger) => {
@@ -489,7 +522,7 @@ export function createObservabilityLogger(options: ObservabilityLoggerOptions = 
     onChild,
     hooks: {
       logMethod(inputArgs, method) {
-        const first = filterApplicationLogFields(inputArgs[0], typeof inputArgs[1] === "string");
+        const first = filterApplicationLogFields(inputArgs[0], typeof inputArgs[1] === "string", profile.preset);
         if (first === inputArgs[0]) {
           method.apply(this, inputArgs);
           return;

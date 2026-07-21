@@ -72,29 +72,31 @@ describe("request IDs", () => {
     expect(validateIncoming).toHaveBeenNthCalledWith(3, "tenant,request");
   });
 
-  it("returns a valid custom ID when generation recovers on the second attempt", () => {
-    const generate = vi
-      .fn<() => string>()
-      .mockImplementationOnce(() => {
-        throw new Error("temporary generator failure");
-      })
-      .mockReturnValueOnce("second-attempt");
+  it("invokes a failing custom generator once before the package fallback", () => {
+    const generate = vi.fn<() => string>(() => {
+      throw new Error("generator failure");
+    });
     const generator = createRequestIdGenerator({ generate });
 
-    expect(generator(request([]))).toBe("second-attempt");
-    expect(generate).toHaveBeenCalledTimes(2);
+    expect(isValidRequestId(generator(request([])))).toBe(true);
+    expect(generate).toHaveBeenCalledOnce();
   });
 
-  it("contains callback failures, retries twice, and uses a safe fallback", () => {
+  it.each(["invalid value", 42])("invokes a generator returning %j once before fallback", (candidate) => {
+    const generate = vi.fn<() => string>(() => candidate as never);
+    const generator = createRequestIdGenerator({ generate });
+
+    expect(isValidRequestId(generator(request([])))).toBe(true);
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
+  it("contains callback failures and uses a safe fallback", () => {
     let attempts = 0;
     let validations = 0;
     const generator = createRequestIdGenerator({
       generate: () => {
         attempts += 1;
-        if (attempts === 1) {
-          throw new Error("boom");
-        }
-        return "invalid value";
+        throw new Error("boom");
       },
       validateIncoming: () => {
         validations += 1;
@@ -102,7 +104,7 @@ describe("request IDs", () => {
       },
     });
     const value = generator(request(["x-request-id", "caller"]));
-    expect(attempts).toBe(2);
+    expect(attempts).toBe(1);
     expect(validations).toBe(1);
     expect(isValidRequestId(value)).toBe(true);
   });

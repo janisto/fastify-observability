@@ -1,4 +1,4 @@
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import Fastify, { type FastifyBaseLogger, LogController } from "fastify";
 import fastifyObservability, {
   createObservabilityLogger,
@@ -201,6 +201,8 @@ describe("Fastify integration", () => {
           status: 599,
           message: "spoofed-message",
           "logging.googleapis.com/future": "spoofed-provider",
+          "logging.googleapis.com/labels": { component: "worker" },
+          "logging.googleapis.com/spanId": "application-span",
           "obs.internal": true,
           tenant_id: "tenant-1",
         },
@@ -227,16 +229,28 @@ describe("Fastify integration", () => {
       operation_Id: TRACE_ID,
       tenant_id: "tenant-1",
     });
-    for (const key of ["method", "status", "logging.googleapis.com/future", "obs.internal"]) {
-      expect(application?.[key]).toBeUndefined();
-    }
+    expect(application).toMatchObject({
+      method: "DELETE",
+      status: 599,
+      "logging.googleapis.com/future": "spoofed-provider",
+      "logging.googleapis.com/labels": { component: "worker" },
+      "logging.googleapis.com/spanId": "application-span",
+      "obs.internal": true,
+    });
     const line = lines.find((candidate) => candidate.includes('"guarded application event"'));
     expect(line).toBeDefined();
     for (const key of ["request_id", "trace_id", "operation_Id", "message", "tenant_id"]) {
       expect(topLevelKeyOccurrences(line ?? "", key)).toBe(1);
     }
-    for (const key of ["method", "status", "logging.googleapis.com/future", "obs.internal"]) {
-      expect(topLevelKeyOccurrences(line ?? "", key)).toBe(0);
+    for (const key of [
+      "method",
+      "status",
+      "logging.googleapis.com/future",
+      "logging.googleapis.com/labels",
+      "logging.googleapis.com/spanId",
+      "obs.internal",
+    ]) {
+      expect(topLevelKeyOccurrences(line ?? "", key)).toBe(1);
     }
     const objectMessage = records.find((record) => record.message === "object-owned application message");
     expect(objectMessage).toMatchObject({
@@ -359,64 +373,49 @@ describe("Fastify integration", () => {
   });
 
   it.each([
-    [
-      "default",
-      {},
-      [
-        "logging.googleapis.com/trace",
-        "logging.googleapis.com/trace_sampled",
-        "logging.googleapis.com/spanId",
-        "xray_trace_id",
-        "operation_Id",
-        "operation_ParentId",
-      ],
-    ],
+    ["default", { level: 30 }],
     [
       "gcp",
-      { "logging.googleapis.com/trace": TRACE_ID, "logging.googleapis.com/trace_sampled": true },
-      ["logging.googleapis.com/spanId", "xray_trace_id", "operation_Id", "operation_ParentId"],
+      {
+        severity: "INFO",
+        "logging.googleapis.com/trace": TRACE_ID,
+        "logging.googleapis.com/trace_sampled": true,
+      },
     ],
-    [
-      "aws",
-      { xray_trace_id: `1-${TRACE_ID.slice(0, 8)}-${TRACE_ID.slice(8)}` },
-      [
-        "logging.googleapis.com/trace",
-        "logging.googleapis.com/trace_sampled",
-        "logging.googleapis.com/spanId",
-        "operation_Id",
-        "operation_ParentId",
-      ],
-    ],
-    [
-      "azure",
-      { operation_Id: TRACE_ID, operation_ParentId: PARENT_ID },
-      [
-        "logging.googleapis.com/trace",
-        "logging.googleapis.com/trace_sampled",
-        "logging.googleapis.com/spanId",
-        "xray_trace_id",
-      ],
-    ],
-  ] as const)("emits only the %s provider correlation shape", async (preset, expected, forbidden) => {
-    const { app, records } = await buildTestApp({}, { preset });
+    ["aws", { level: 30, xray_trace_id: `1-${TRACE_ID.slice(0, 8)}-${TRACE_ID.slice(8)}` }],
+    ["azure", { level: 30, operation_Id: TRACE_ID, operation_ParentId: PARENT_ID }],
+  ] as const)("protects %s-owned fields and retains inactive profile-shaped fields", async (preset, canonical) => {
+    const spoofed = {
+      level: "spoofed-level",
+      severity: "spoofed-severity",
+      httpRequest: { spoofed: true },
+      "logging.googleapis.com/trace": "spoofed-gcp-trace",
+      "logging.googleapis.com/trace_sampled": false,
+      xray_trace_id: "spoofed-xray-trace",
+      operation_Id: "spoofed-azure-operation",
+      operation_ParentId: "spoofed-azure-parent",
+    };
+    const { app, records } = await buildTestApp({ extraFields: () => ({ ...spoofed }) }, { preset });
     apps.push(app);
     app.get("/", (request) => {
-      request.log.info("handler");
+      request.log.info({ ...spoofed }, "handler");
       return { ok: true };
     });
     await app.inject({ url: "/", headers: { traceparent: TRACEPARENT } });
-    for (const record of [records.find((candidate) => candidate.message === "handler"), accessRecords(records)[0]]) {
-      expect(record).toMatchObject({
-        trace_id: TRACE_ID,
-        parent_id: PARENT_ID,
-        trace_flags: "01",
-        trace_sampled: true,
-        ...expected,
-      });
-      for (const key of forbidden) {
-        expect(record?.[key]).toBeUndefined();
-      }
-    }
+    const handler = records.find((candidate) => candidate.message === "handler");
+    const access = accessRecords(records)[0];
+    const shared = {
+      trace_id: TRACE_ID,
+      parent_id: PARENT_ID,
+      trace_flags: "01",
+      trace_sampled: true,
+      ...spoofed,
+      ...canonical,
+    };
+    expect(handler).toMatchObject(shared);
+    expect(access).toMatchObject(
+      preset === "gcp" ? { ...shared, httpRequest: { requestMethod: "GET", status: 200 } } : shared,
+    );
   });
 
   it("propagates an unsampled W3C flag to both neutral and GCP correlation fields", async () => {
@@ -676,11 +675,17 @@ describe("Fastify integration", () => {
     expect(accessRecords(records)).toEqual([expect.objectContaining({ level: 20, status: 201 })]);
   });
 
-  it("preserves safe extra fields and omits reserved fields", async () => {
-    const { app, records } = await buildTestApp({
+  it("preserves contextual extra fields and omits exact reserved fields", async () => {
+    const { app, lines, records } = await buildTestApp({
       extraFields: () => ({
         component: "catalog",
         status: 999,
+        "logging.googleapis.com/future": "future-value",
+        "logging.googleapis.com/labels": { component: "worker" },
+        "logging.googleapis.com/spanId": "application-span",
+        "obs.internal": true,
+        _obs_internal: "application-value",
+        remote_ip: "203.0.113.10",
         req: { headers: "secret" },
         ["__proto__"]: "bad",
         constructor: "bad",
@@ -691,9 +696,32 @@ describe("Fastify integration", () => {
     app.get("/items", () => ({ ok: true }));
     expect((await app.inject("/items")).statusCode).toBe(200);
     const access = accessRecords(records)[0];
-    expect(access).toMatchObject({ level: 30, status: 200, component: "catalog" });
+    expect(access).toMatchObject({
+      level: 30,
+      status: 200,
+      component: "catalog",
+      "logging.googleapis.com/future": "future-value",
+      "logging.googleapis.com/labels": { component: "worker" },
+      "logging.googleapis.com/spanId": "application-span",
+      "obs.internal": true,
+      _obs_internal: "application-value",
+      remote_ip: "203.0.113.10",
+    });
     for (const key of ["req", "__proto__", "constructor", "prototype"]) {
       expect(Object.hasOwn(access ?? {}, key)).toBe(false);
+    }
+    const line = lines.find((candidate) => candidate.includes('"message":"request completed"'));
+    expect(line).toBeDefined();
+    for (const key of [
+      "status",
+      "logging.googleapis.com/future",
+      "logging.googleapis.com/labels",
+      "logging.googleapis.com/spanId",
+      "obs.internal",
+      "_obs_internal",
+      "remote_ip",
+    ]) {
+      expect(topLevelKeyOccurrences(line ?? "", key)).toBe(1);
     }
   });
 
@@ -762,6 +790,34 @@ describe("Fastify integration", () => {
     ]);
   });
 
+  it("observes only the final payload after route onSend replacement", async () => {
+    const { app, records } = await buildTestApp({ captureError: true });
+    apps.push(app);
+    app.get(
+      "/replaced-stream",
+      {
+        onSend: async () => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 30));
+          return "healthy";
+        },
+      },
+      () => {
+        const discarded = new PassThrough();
+        discarded.on("error", () => undefined);
+        setTimeout(() => discarded.destroy(new Error("discarded stream")), 5);
+        return discarded;
+      },
+    );
+
+    const response = await app.inject("/replaced-stream");
+    expect(response).toMatchObject({ statusCode: 200, body: "healthy" });
+    const access = accessRecords(records);
+    expect(access).toHaveLength(1);
+    expect(access[0]).toMatchObject({ status: 200, path_template: "/replaced-stream" });
+    expect(access[0]?.["terminal_reason"]).toBeUndefined();
+    expect(access[0]?.["err"]).toBeUndefined();
+  });
+
   it("emits a query-free 404 record without inventing a route template", async () => {
     const { app, records } = await buildTestApp({ capturePath: true });
     apps.push(app);
@@ -771,6 +827,19 @@ describe("Fastify integration", () => {
     const missing = accessRecords(records)[0];
     expect(missing).toMatchObject({ status: 404, path: "/missing" });
     expect(missing?.["path_template"]).toBeUndefined();
+  });
+
+  it("extracts the routed path without retaining request-target fragment syntax", async () => {
+    const { app, lines, records } = await buildTestApp({ capturePath: true });
+    apps.push(app);
+    app.get("/items", () => ({ ok: true }));
+
+    expect((await app.inject("/items#PATH_FRAGMENT_SECRET")).statusCode).toBe(200);
+
+    expect(accessRecords(records)).toEqual([
+      expect.objectContaining({ status: 200, path: "/items", path_template: "/items" }),
+    ]);
+    expect(lines.join("\n")).not.toContain("PATH_FRAGMENT_SECRET");
   });
 
   it("keeps representative parameter and catch-all identity stable across request values", async () => {
@@ -785,6 +854,10 @@ describe("Fastify integration", () => {
     app.get("/punctuation/:$id", { schema: { operationId: "get\tpunctuation" } as never }, () => ({ ok: true }));
     app.get("/regex/:id(^foo\\/bar$)", { schema: { operationId: "get_regex" } as never }, () => ({ ok: true }));
     app.get("/name::verb", { schema: { operationId: "get_literal_colon" } as never }, () => ({ ok: true }));
+    app.get("/name::::verb", { schema: { operationId: "get_two_literal_colons" } as never }, () => ({ ok: true }));
+    app.get("/posts/:id?", { schema: { operationId: "get_optional" } as never }, () => ({ ok: true }));
+    app.get("/composite/:filename.:ext", { schema: { operationId: "get_composite" } as never }, () => ({ ok: true }));
+    app.get("/coords/:lat-:lng", { schema: { operationId: "get_coordinates" } as never }, () => ({ ok: true }));
     app.get("/files/*", { schema: { operationId: "get_file" } as never }, () => ({ ok: true }));
 
     expect((await app.inject("/items/tenant-a")).statusCode).toBe(200);
@@ -796,6 +869,12 @@ describe("Fastify integration", () => {
     expect((await app.inject("/punctuation/value")).statusCode).toBe(200);
     expect((await app.inject("/regex/foo%2Fbar")).statusCode).toBe(200);
     expect((await app.inject("/name:verb")).statusCode).toBe(200);
+    expect((await app.inject("/name::verb")).statusCode).toBe(200);
+    expect((await app.inject("/posts")).statusCode).toBe(200);
+    expect((await app.inject("/posts/42")).statusCode).toBe(200);
+    expect((await app.inject("/composite/report.csv")).statusCode).toBe(200);
+    expect((await app.inject("/composite/photo.jpg")).statusCode).toBe(200);
+    expect((await app.inject("/coords/60-25")).statusCode).toBe(200);
     expect((await app.inject("/files/tenant-a/one")).statusCode).toBe(200);
     expect((await app.inject("/files/tenant-b/two")).statusCode).toBe(200);
 
@@ -809,6 +888,12 @@ describe("Fastify integration", () => {
       { path_template: "/punctuation/{$id}", operation_id: "get\tpunctuation" },
       { path_template: "/regex/{id}", operation_id: "get_regex" },
       { path_template: "/name:verb", operation_id: "get_literal_colon" },
+      { path_template: "/name::verb", operation_id: "get_two_literal_colons" },
+      { path_template: "/posts/:id?", operation_id: "get_optional" },
+      { path_template: "/posts/:id?", operation_id: "get_optional" },
+      { path_template: "/composite/:filename.:ext", operation_id: "get_composite" },
+      { path_template: "/composite/:filename.:ext", operation_id: "get_composite" },
+      { path_template: "/coords/:lat-:lng", operation_id: "get_coordinates" },
       { path_template: "/files/{*path}", operation_id: "get_file" },
       { path_template: "/files/{*path}", operation_id: "get_file" },
     ]);

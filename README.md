@@ -213,7 +213,7 @@ plugin options, so the logger envelope and provider fields cannot drift apart.
 | `traceHeader` | `"traceparent"` | W3C trace context header |
 | `tracestateHeader` | `"tracestate"` | W3C vendor trace state header |
 | `traceContextLevel` | `1` | Pinned W3C grammar and flag semantics; `1` or explicit `2` |
-| `capturePath` | `false` | Include a valid query-free origin-form path and GCP `requestUrl`; omit unavailable or malformed targets |
+| `capturePath` | `false` | Include the exact nonempty query-free path exposed by Node's raw target, including `*`; no second percent-escape grammar is applied |
 | `capturePeerIp` | `false` | Include the canonical direct socket IP as `peer_ip` and GCP `remoteIp`; omit non-IP or zoned values |
 | `captureUserAgent` | `false` | Include one unambiguous User-Agent and GCP `userAgent` |
 | `captureError` | `false` | Include the native privacy-sensitive `err` field on abnormal terminal records |
@@ -234,7 +234,7 @@ whitespace and unsafe framing are rejected before the callback. Generated and
 fallback IDs always retain the package baseline.
 
 Missing, empty, duplicate, or policy-invalid incoming values are replaced. A
-custom generator is tried twice and then failure-contained with a package
+custom generator is tried once and then failure-contained with a package
 fallback. When a custom request-ID header is used, pass the same name to the
 generator and plugin.
 
@@ -302,13 +302,13 @@ same one-shot terminal guard.
 | --- | --- |
 | `method` | Fastify/Node parsed HTTP method |
 | `path` | Opt-in concrete escaped path without a query string |
-| `path_template` | Canonical matched template (`{name}` and `{*path}`); omitted for a normal 404 or an unsafe/ambiguous native form |
+| `path_template` | Matched low-cardinality route template; simple Fastify forms use `{name}` and `{*path}`, richer authoritative native syntax is preserved, and normal 404s omit it |
 | `operation_id` | Explicit `schema.operationId` only |
 | `status` | Final status when trustworthy |
 | `duration_ms` | Non-negative monotonic duration including streaming |
 | `peer_ip` | Opt-in direct socket peer; forwarded and proxy-derived values are ignored |
-| `user_agent` | Opt-in single unambiguous UTF-8 RFC 9110 field-content value |
-| `terminal_reason` | `timeout`, `client_disconnect`, or `body_error` |
+| `user_agent` | Opt-in single unambiguous text field value exposed by Node's HTTP parser |
+| `terminal_reason` | `timeout`, `client_disconnect`, `response_dropped`, or `body_error` |
 | `err` | Opt-in observed `Error` (`captureError: true`), including standard type, message, and stack |
 | `httpRequest` | GCP HTTP request object, on the GCP preset only |
 
@@ -323,8 +323,8 @@ concrete `path` remains high-cardinality diagnostic data.
 
 Fastify whole-segment `:name` parameters are emitted as `{name}` and its
 unnamed `*` catch-all is emitted as `{*path}`. Regex constraints are removed
-while the parameter name is retained. Optional or composite native segments
-are omitted because they do not have one unambiguous portable template.
+while the parameter name is retained. Richer optional or composite syntax is
+preserved from Fastify's authoritative matched-route template.
 
 That is deliberate terminal-schema selection, not hidden redaction. Fields an
 application explicitly passes to `app.log`, `request.log`, or `reply.log` are
@@ -378,8 +378,10 @@ duplicated:
    access logging.
 5. An application extra field equal to a stable root binding is reused; a
    conflicting extra field is omitted with one diagnostic.
-6. Plain application event objects drop reserved package, access, provider,
-   envelope, and reserved-prefix fields before Pino serializes them.
+6. Plain application event objects drop exact envelope, correlation, and
+   selected-profile provider fields before Pino serializes them. Access-only
+   fields and exact aliases owned only by an inactive provider profile remain
+   application data.
 7. Tests inspect the raw JSON line before parsing it.
 
 Opaque non-plain objects, serializer internals, and application-supplied

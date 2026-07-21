@@ -90,15 +90,13 @@ function safeFallbackRequestId(): string {
 
 function generateRequestId(generate: (() => string) | undefined): string {
   if (generate !== undefined) {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const candidate = generate();
-        if (isValidRequestId(candidate)) {
-          return candidate;
-        }
-      } catch {
-        // Application callbacks are untrusted; retry once, then use the safe fallback.
+    try {
+      const candidate = generate();
+      if (isValidRequestId(candidate)) {
+        return candidate;
       }
+    } catch {
+      // Application callbacks are untrusted; use the package fallback.
     }
   }
   return safeFallbackRequestId();

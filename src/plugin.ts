@@ -1,4 +1,4 @@
-import type { FastifyBaseLogger, FastifyPluginCallback, FastifyRequest } from "fastify";
+import type { FastifyBaseLogger, FastifyPluginCallback, FastifyRequest, onSendHookHandler } from "fastify";
 import fp from "fastify-plugin";
 import type { Logger } from "pino";
 import { type AccessState, canonicalPeerIp, emitAccessRecord, observeStream, requestUserAgent } from "./access.js";
@@ -9,6 +9,7 @@ import {
   createCanonicalChild,
   isProtectedLogField,
   markTrustedLogFields,
+  type ObservabilityLoggerProfile,
 } from "./logger.js";
 import { correlationFields } from "./presets.js";
 import { consumeRequestIdHandshake } from "./request-id.js";
@@ -63,9 +64,12 @@ function snapshotBindings(logger: PinoLogger): Record<string, unknown> {
   return snapshot;
 }
 
-function validateRootBindings(bindings: Readonly<Record<string, unknown>>): void {
+function validateRootBindings(
+  bindings: Readonly<Record<string, unknown>>,
+  preset: ObservabilityLoggerProfile["preset"],
+): void {
   for (const key of Object.keys(bindings)) {
-    if (isProtectedLogField(key)) {
+    if (isProtectedLogField(key, preset)) {
       throw new Error(`fastify-observability reserves Pino base binding "${key}"`);
     }
   }
@@ -127,7 +131,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       throw new Error("fastify-observability requires loggerInstance from createObservabilityLogger()");
     }
     const rootBindings = snapshotBindings(rootLogger);
-    validateRootBindings(rootBindings);
+    validateRootBindings(rootBindings, profile.preset);
     const options = normalizeOptions(rawOptions, profile.preset);
     fastify.decorate(INSTALLED, true);
     fastify.decorateRequest("observability");
@@ -241,13 +245,15 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       };
       (request as InternalRequest)[STATE] = state;
       const closeListener = () => {
-        if (!reply.raw.writableFinished) {
-          emitAccessRecord(
-            state,
-            state.streamFailed ? "body_error" : "client_disconnect",
-            reply.raw.headersSent ? reply.raw.statusCode : undefined,
-          );
-        }
+        setImmediate(() => {
+          if (!state.emitted && !reply.raw.writableFinished) {
+            emitAccessRecord(
+              state,
+              state.streamFailed ? "body_error" : "response_dropped",
+              reply.raw.headersSent ? reply.raw.statusCode : undefined,
+            );
+          }
+        });
       };
       state.closeListener = closeListener;
       reply.raw.once("close", closeListener);
@@ -262,12 +268,21 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       next();
     });
 
-    fastify.addHook("onSend", (request, _reply, payload, next) => {
-      const state = (request as InternalRequest)[STATE];
-      if (state !== undefined) {
-        observeStream(state, payload);
-      }
-      next(null, payload);
+    fastify.addHook("onRoute", (routeOptions) => {
+      const finalObserver: onSendHookHandler = (request, _reply, payload, next) => {
+        const state = (request as InternalRequest)[STATE];
+        if (state !== undefined) {
+          observeStream(state, payload);
+        }
+        next(null, payload);
+      };
+      const existing = routeOptions.onSend;
+      routeOptions.onSend =
+        existing === undefined
+          ? finalObserver
+          : Array.isArray(existing)
+            ? [...existing, finalObserver]
+            : [existing, finalObserver];
     });
 
     fastify.addHook("onResponse", (request, reply, next) => {
@@ -290,11 +305,12 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       const state = (request as InternalRequest)[STATE];
       if (state !== undefined) {
         const sent = state.reply.raw.headersSent;
-        emitAccessRecord(
-          state,
-          state.streamFailed ? "body_error" : "client_disconnect",
-          sent ? state.reply.raw.statusCode : undefined,
-        );
+        const reason = state.streamFailed
+          ? "body_error"
+          : request.raw.complete
+            ? "response_dropped"
+            : "client_disconnect";
+        emitAccessRecord(state, reason, sent ? state.reply.raw.statusCode : undefined);
       }
       next();
     });

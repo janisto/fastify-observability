@@ -51,9 +51,10 @@ The changes in this section target `2.0.0` and must not be published on the
 - Documented LF-terminated NDJSON as the logging boundary and added raw-writer
   regression coverage for independently parseable records.
 
-- Omit unavailable, malformed, and non-origin-form request paths; canonicalize
-  direct peer IP literals; and distinguish response-stream failures from
-  unrelated handler errors when classifying disconnects.
+- Preserve a nonempty query-free path from Node's raw request target, including
+  malformed percent triplets that reached Fastify and the `*` target, without a
+  second adapter parser; canonicalize direct peer IP literals; and distinguish
+  response-stream failures from unrelated handler errors.
 - Disabled concrete path, direct peer IP, and User-Agent capture by default;
   renamed the opt-in portable peer field from `remote_ip` to `peer_ip`, and
   made the matching GCP request members conditional on those opt-ins.
@@ -67,13 +68,20 @@ The changes in this section target `2.0.0` and must not be published on the
   `body_error`, and `timeout`, and made every abnormal access record use
   `error` while retaining the one-shot lifecycle guard.
 - **Breaking:** Canonicalized Fastify `:name` and `*` route metadata to portable
-  `{name}` and `{*path}` templates; ambiguous optional/composite forms are
-  omitted.
+  `{name}` and `{*path}` templates while preserving richer authoritative
+  Fastify optional/composite syntax and repeated escaped literal colons.
 
 ### Fixed
 
-- Prevented plain application log fields from overriding or duplicating
-  reserved request, access, envelope, and provider fields in raw NDJSON.
+- Prevented plain application log fields from overriding or duplicating exact
+  envelope, correlation, and selected-profile provider fields. Exact aliases
+  owned only by an inactive profile remain application data. Access enrichment
+  separately protects its exact terminal fields without reserving unrelated
+  names or prefixes.
+- Invoke configured request-ID generators once before package-owned fallback,
+  avoiding duplicate application callback side effects.
+- Classify ambiguous unfinished response closes as `response_dropped`, and
+  observe the final route payload after later `onSend` transformations.
 - Emit GCP `httpRequest.latency` with canonical ProtoJSON fractional widths:
   0, 3, 6, or 9 digits according to the required precision.
 - Apply the RFC 9110 field-content boundary before custom request-ID validation,
