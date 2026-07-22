@@ -7,9 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-The changes in this section target `2.0.0` and must not be published on the
-`1.x` release line. Version 2 intentionally removes v1 compatibility-only
-options rather than preserving shims.
+## [2.0.0] - 2026-07-22
+
+Version 2 intentionally removes v1 compatibility-only options rather than
+preserving shims.
 
 ### Migration from 1.x
 
@@ -153,7 +154,8 @@ options rather than preserving shims.
 - Bootstrap release establishing the package on npm with metadata only and no
   runtime API.
 
-[Unreleased]: https://github.com/janisto/fastify-observability/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/janisto/fastify-observability/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/janisto/fastify-observability/compare/v1.0.1...v2.0.0
 [1.0.1]: https://github.com/janisto/fastify-observability/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/janisto/fastify-observability/compare/v0.2.1...v1.0.0
 [0.2.1]: https://github.com/janisto/fastify-observability/compare/v0.2.0...v0.2.1
