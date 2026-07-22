@@ -84,7 +84,6 @@ import Fastify, { LogController } from "fastify";
 import fastifyObservability, {
   createObservabilityLogger,
   createRequestIdGenerator,
-  getObservabilityLoggerProfile,
 } from "fastify-observability";
 
 const logger = createObservabilityLogger({
@@ -93,10 +92,6 @@ const logger = createObservabilityLogger({
   preset: "gcp",
   level: process.env.NODE_ENV === "development" ? "debug" : "info",
 });
-
-// The unpinned GCP preset resolves to the newest profile in this installed
-// package. This is currently { preset: "gcp", gcpProfileVersion: "0.1.0" }.
-getObservabilityLoggerProfile(logger);
 
 const app = Fastify({
   loggerInstance: logger,
@@ -153,9 +148,6 @@ record contract.
 | Logger option | Default | Purpose |
 | --- | --- | --- |
 | `preset` | `"default"` | `default`, `gcp`, `aws`, or `azure` field shape |
-| `gcpProfileVersion` | Newest installed GCP profile | Exact supported GCP profile pin; currently `"0.1.0"` |
-| `awsProfileVersion` | Current AWS profile | Exact supported AWS profile pin; currently `"0.1.0"` |
-| `azureProfileVersion` | Current Azure profile | Exact supported Azure profile pin; currently `"0.1.0"` |
 | `level` | `"info"` | Standard Pino threshold, including `silent` |
 | `base` | Pino default | Stable application bindings such as service metadata |
 | `redact` | None | Explicit root Pino redaction; no fields are redacted by default |
@@ -273,12 +265,6 @@ Level 2 is explicit and immutable after plugin registration:
 ```ts
 await app.register(fastifyObservability, { traceContextLevel: 2 });
 ```
-
-The provider-neutral [`examples/basic/app.ts`](https://github.com/janisto/fastify-observability/blob/main/examples/basic/app.ts) leaves
-the trace-level option unset for its default Level 1 `app`. To enable Level 2,
-use its `createLevel2App()` factory, which passes `traceContextLevel: 2`.
-Native tests send flags `03` through the default and Level 2 paths and verify
-that only Level 2 emits `trace_id_random`.
 
 Both levels preserve `trace_flags` and derive `trace_sampled` from bit zero.
 For version `00`, Level 2 additionally exposes `traceIdRandom` on the request
@@ -403,19 +389,10 @@ Set `preset` in `createObservabilityLogger()`.
   `logging.googleapis.com/spanId`, because the incoming parent ID is not a
   current span created by this package. This matches Cloud Trace's current
   [preferred trace field format](https://docs.cloud.google.com/trace/docs/trace-log-integration).
-  Omitting `gcpProfileVersion` resolves once to the newest GCP profile supported
-  by the installed package, currently `0.1.0`; exact pinning accepts `"0.1.0"`.
-  Unsupported pins fail logger creation and resolution performs no network
-  lookup.
-- `aws` adds flat `xray_trace_id` in `1-8hex-24hex` form. Omission resolves to
-  exact current profile `0.1.0`; `awsProfileVersion: "0.1.0"` pins it, and
-  `getObservabilityLoggerProfile()` exposes the resolved value. Other pins are
-  rejected. It does not create an X-Ray segment or parse legacy X-Ray headers.
-- `azure` adds flat `operation_Id` and `operation_ParentId`. Omission resolves
-  to exact current profile `0.1.0`; `azureProfileVersion: "0.1.0"` pins it, and
-  `getObservabilityLoggerProfile()` exposes the resolved value. Other pins are
-  rejected. It does not start Application Insights telemetry or parse legacy
-  request headers.
+- `aws` adds flat `xray_trace_id` in `1-8hex-24hex` form. It does not create an
+  X-Ray segment or parse legacy X-Ray headers.
+- `azure` adds flat `operation_Id` and `operation_ParentId`. It does not start
+  Application Insights telemetry or parse legacy request headers.
 - `default` emits provider-neutral request and W3C correlation fields.
 
 Provider fields correlate logs only. No provider SDK is initialized and no span

@@ -31,9 +31,6 @@ The changes in this section target `2.0.0` and must not be published on the
 
 ### Added
 
-- Added exact current `0.1.0` profiles for GCP, AWS, and Azure, exact pinning
-  through their provider-specific options, and safe effective-profile
-  introspection through `getObservabilityLoggerProfile()`.
 - Added independent `capturePath`, `capturePeerIp`, and `captureUserAgent`
   opt-ins plus an injectable monotonic `clock` for deterministic tests.
 - Added explicit W3C Trace Context Level 2 configuration, including its
@@ -42,8 +39,6 @@ The changes in this section target `2.0.0` and must not be published on the
 
 ### Changed
 
-- Expanded the provider-neutral basic example with the Level 1 default, an
-  explicit Level 2 application factory, and behavioral output tests.
 - Removed v1 compatibility shims from the plugin options; unknown legacy
   options now fail construction like every other unsupported key.
 - Set package metadata to `2.0.0` so local package validation cannot produce a

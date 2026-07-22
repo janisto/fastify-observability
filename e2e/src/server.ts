@@ -54,17 +54,17 @@ function configuration(selected: E2ECase): {
   switch (selected) {
     case "aws_level1":
       return {
-        logger: { preset: "aws", awsProfileVersion: "0.1.0" },
+        logger: { preset: "aws" },
         plugin: { traceContextLevel },
       };
     case "azure_level1":
       return {
-        logger: { preset: "azure", azureProfileVersion: "0.1.0" },
+        logger: { preset: "azure" },
         plugin: { traceContextLevel },
       };
     case "gcp_level1":
       return {
-        logger: { preset: "gcp", gcpProfileVersion: "0.1.0" },
+        logger: { preset: "gcp" },
         plugin: {
           traceContextLevel,
           extraFields: () => ({ e2e_configuration: e2eConfiguration }),

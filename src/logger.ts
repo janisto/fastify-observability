@@ -7,22 +7,11 @@ import pino, {
   type Logger,
   type LoggerOptions,
 } from "pino";
-import type { AwsProfileVersion, AzureProfileVersion, GcpProfileVersion, LoggingPreset } from "./types.js";
+import type { LoggingPreset } from "./types.js";
 
 const PRESETS = new Set<LoggingPreset>(["default", "gcp", "aws", "azure"]);
 const LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal", "silent"]);
-const LOGGER_OPTION_KEYS = new Set([
-  "preset",
-  "gcpProfileVersion",
-  "awsProfileVersion",
-  "azureProfileVersion",
-  "level",
-  "base",
-  "redact",
-  "serializers",
-  "transport",
-  "destination",
-]);
+const LOGGER_OPTION_KEYS = new Set(["preset", "level", "base", "redact", "serializers", "transport", "destination"]);
 const CHILD_OPTION_KEYS = new Set(["level", "serializers"]);
 const FASTIFY_UNSET_CHILD_OPTIONS = new Set(["logger", "genReqId"]);
 const PINO_IGNORED_BINDINGS = new Set(["serializers", "formatters", "customLevels"]);
@@ -94,9 +83,6 @@ export const PROTECTED_LOG_FIELDS = new Set([
 
 export interface ObservabilityLoggerOptions {
   preset?: LoggingPreset;
-  gcpProfileVersion?: GcpProfileVersion;
-  awsProfileVersion?: AwsProfileVersion;
-  azureProfileVersion?: AzureProfileVersion;
   level?: LevelWithSilent;
   base?: LoggerOptions["base"];
   redact?: LoggerOptions["redact"];
@@ -112,9 +98,6 @@ export type ObservabilityLogger = Omit<Logger, "child" | "level" | "onChild" | "
 
 export interface ObservabilityLoggerProfile {
   readonly preset: LoggingPreset;
-  readonly gcpProfileVersion?: GcpProfileVersion;
-  readonly awsProfileVersion?: AwsProfileVersion;
-  readonly azureProfileVersion?: AzureProfileVersion;
 }
 
 type NativeChild = (bindings: Bindings, options?: ChildLoggerOptions) => Logger;
@@ -182,34 +165,8 @@ export function bindingValuesEqual(left: unknown, right: unknown): boolean {
   return Object.is(left, right) || isDeepStrictEqual(left, right);
 }
 
-function validateProfileOption(
-  preset: LoggingPreset,
-  owner: Exclude<LoggingPreset, "default">,
-  name: "gcpProfileVersion" | "awsProfileVersion" | "azureProfileVersion",
-  value: string | undefined,
-): void {
-  if (value !== undefined && preset !== owner) {
-    throw new TypeError(`${name} requires preset "${owner}"`);
-  }
-  if (preset === owner && value !== undefined && value !== "0.1.0") {
-    throw new TypeError(`unsupported ${owner.toUpperCase()} profile version; expected 0.1.0`);
-  }
-}
-
-function resolveLoggerProfile(options: ObservabilityLoggerOptions, preset: LoggingPreset): ObservabilityLoggerProfile {
-  validateProfileOption(preset, "gcp", "gcpProfileVersion", options.gcpProfileVersion);
-  validateProfileOption(preset, "aws", "awsProfileVersion", options.awsProfileVersion);
-  validateProfileOption(preset, "azure", "azureProfileVersion", options.azureProfileVersion);
-  switch (preset) {
-    case "gcp":
-      return Object.freeze({ preset, gcpProfileVersion: options.gcpProfileVersion ?? "0.1.0" });
-    case "aws":
-      return Object.freeze({ preset, awsProfileVersion: options.awsProfileVersion ?? "0.1.0" });
-    case "azure":
-      return Object.freeze({ preset, azureProfileVersion: options.azureProfileVersion ?? "0.1.0" });
-    default:
-      return Object.freeze({ preset });
-  }
+function resolveLoggerProfile(preset: LoggingPreset): ObservabilityLoggerProfile {
+  return Object.freeze({ preset });
 }
 
 function validateOptions(options: ObservabilityLoggerOptions): ObservabilityLoggerProfile {
@@ -244,7 +201,7 @@ function validateOptions(options: ObservabilityLoggerOptions): ObservabilityLogg
   ) {
     throw new TypeError("logger destination must provide write(message)");
   }
-  return resolveLoggerProfile(options, preset);
+  return resolveLoggerProfile(preset);
 }
 
 function validateTransport(profile: ObservabilityLoggerProfile, transport: LoggerOptions["transport"]): void {
@@ -480,14 +437,6 @@ function registerLogger(
 
 export function canonicalLoggerProfile(logger: object): ObservabilityLoggerProfile | undefined {
   return profiles.get(logger);
-}
-
-export function getObservabilityLoggerProfile(logger: object): ObservabilityLoggerProfile {
-  const profile = profiles.get(logger);
-  if (profile === undefined) {
-    throw new TypeError("logger is not a fastify-observability canonical logger");
-  }
-  return profile;
 }
 
 export function createCanonicalChild(logger: Logger, bindings: Bindings): Logger {

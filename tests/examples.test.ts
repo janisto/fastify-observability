@@ -5,8 +5,7 @@ import { accessRecords, buildTestApp } from "./helpers.js";
 
 const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const PARENT_ID = "00f067aa0ba902b7";
-const TRACEPARENT = `00-${TRACE_ID}-${PARENT_ID}-01`;
-const RANDOM_TRACEPARENT = `00-${TRACE_ID}-${PARENT_ID}-03`;
+const TRACEPARENT = `00-${TRACE_ID}-${PARENT_ID}-03`;
 
 function bindings(logger: FastifyBaseLogger): Record<string, unknown> {
   const read = Reflect.get(logger, "bindings");
@@ -44,16 +43,18 @@ describe("examples", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.headers["x-request-id"]).toBe("example-request");
-      expect(response.json()).toMatchObject({ requestId: "example-request", correlationId: TRACE_ID });
-      expect(canonicalLoggerProfile(app.log)).toEqual(
-        preset === "gcp"
-          ? { preset, gcpProfileVersion: "0.1.0" }
-          : preset === "aws"
-            ? { preset, awsProfileVersion: "0.1.0" }
-            : preset === "azure"
-              ? { preset, azureProfileVersion: "0.1.0" }
-              : { preset },
-      );
+      const context = response.json<{
+        requestId: string;
+        correlationId: string;
+        traceContext: { traceContextLevel: number; traceIdRandom?: boolean };
+      }>();
+      expect(context).toMatchObject({
+        requestId: "example-request",
+        correlationId: TRACE_ID,
+        traceContext: { traceContextLevel: 1 },
+      });
+      expect(context.traceContext.traceIdRandom).toBeUndefined();
+      expect(canonicalLoggerProfile(app.log)).toEqual({ preset });
       expect(app.hasRequestDecorator("observability")).toBe(true);
       expect(app.hasRoute({ method: "GET", url: "/" })).toBe(false);
       expect(requestBindings).toMatchObject({
@@ -61,9 +62,10 @@ describe("examples", () => {
         correlation_id: TRACE_ID,
         trace_id: TRACE_ID,
         parent_id: PARENT_ID,
-        trace_flags: "01",
+        trace_flags: "03",
         trace_sampled: true,
       });
+      expect(requestBindings?.["trace_id_random"]).toBeUndefined();
       const providerFields: Record<string, Record<string, unknown>> = {
         default: {},
         gcp: {
@@ -89,41 +91,6 @@ describe("examples", () => {
       }
     } finally {
       await app.close();
-    }
-  });
-
-  it.each([
-    ["the Level 1 default", "createDefaultApp", 1, undefined],
-    ["Level 2", "createLevel2App", 2, true],
-  ] as const)("demonstrates distinct %s output in the basic example", async (name, factoryName, expectedLevel, expectedRandom) => {
-    vi.resetModules();
-    const exampleModule = await import("../examples/basic/app.js");
-    const defaultApp = exampleModule.app;
-    const exampleApp = exampleModule[factoryName]();
-    try {
-      Reflect.set(exampleApp.log, "level", "silent");
-      exampleApp.get("/__trace_level_probe", (request) => ({
-        requestBindings: bindings(request.log),
-        traceContext: request.observability.traceContext,
-      }));
-      await exampleApp.ready();
-      const response = await exampleApp.inject({
-        url: "/__trace_level_probe",
-        headers: { traceparent: RANDOM_TRACEPARENT },
-      });
-
-      expect(response.statusCode, name).toBe(200);
-      const result = response.json<{
-        requestBindings: Record<string, unknown>;
-        traceContext: { traceContextLevel: number };
-      }>();
-      expect(result.requestBindings["trace_flags"], name).toBe("03");
-      expect(result.requestBindings["trace_sampled"], name).toBe(true);
-      expect(result.requestBindings["trace_id_random"], name).toBe(expectedRandom);
-      expect(result.traceContext.traceContextLevel, name).toBe(expectedLevel);
-    } finally {
-      await exampleApp.close();
-      await defaultApp.close();
     }
   });
 

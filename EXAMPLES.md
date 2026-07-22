@@ -13,11 +13,9 @@ registering its plugins and routes.
 | [`examples/azure/app.ts`](examples/azure/app.ts) | Flat Azure operation correlation without an Azure SDK |
 | [`examples/local_wrapper/applog.ts`](examples/local_wrapper/applog.ts) | Optional application-local logging helpers |
 
-The setup modules export `app` so an application can add its own plugins,
-routes, and startup policy. The provider-neutral module also exports
-`createLevel2App()` to demonstrate the explicit W3C Trace Context Level 2
-opt-in without duplicating Fastify setup. TypeScript checks every example, and
-native tests execute the default and Level 2 basic paths.
+The setup modules export `app` only so an application can add its own plugins,
+routes, and startup policy. TypeScript checks every example as part of
+`pnpm typecheck`.
 
 The examples use the full-fidelity default: no fields are redacted. Applications
 that require a privacy policy configure `redact` once in
@@ -29,10 +27,10 @@ plugin derives it from that logger. In the GCP example,
 `logging.googleapis.com/trace` intentionally remains the bare trace ID from the
 validated W3C `traceparent`; no project resource prefix is added.
 
-Trace Context Level 1 is the default, so the basic `app` does not set a trace
-level. Use `createLevel2App()` to opt in to the pinned Level 2 grammar and the
-`trace_id_random` projection. The provider preset remains logger-owned and does
-not change the selected W3C level.
+Trace Context Level 1 is the default. Set `traceContextLevel: 2` on the plugin
+to opt in to the pinned Level 2 grammar and the `trace_id_random` projection.
+The provider preset remains logger-owned and does not change the selected W3C
+level.
 
 ## GCP health-route logging
 
