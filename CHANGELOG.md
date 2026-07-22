@@ -8,7 +8,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ## [Unreleased]
 
 The changes in this section target `2.0.0` and must not be published on the
-`1.x` release line.
+`1.x` release line. Version 2 intentionally removes v1 compatibility-only
+options rather than preserving shims.
 
 ### Migration from 1.x
 
@@ -23,80 +24,77 @@ The changes in this section target `2.0.0` and must not be published on the
 - Rename consumers of `remote_ip` to `peer_ip`. The new field uses only the
   direct socket peer and does not trust proxy-derived addresses.
 - Update abnormal-outcome queries from `request_aborted` and
-  `response_aborted` to `client_disconnect` and `body_error`; timeouts remain
-  `timeout`, and normal responses no longer need a terminal reason.
-- Treat abnormal terminal records as `ERROR`, opt into native `err` details
+  `response_aborted` to `client_disconnect`, `body_error`, and
+  `response_dropped`; timeouts remain `timeout`, and normal responses no longer
+  need a terminal reason.
+- Treat abnormal terminal records as `error`, opt into native `err` details
   only when their privacy impact is acceptable, and update route dimensions to
   the canonical `{name}` and `{*path}` template syntax.
 
 ### Added
 
-- Added independent `capturePath`, `capturePeerIp`, and `captureUserAgent`
-  opt-ins plus an injectable monotonic `clock` for deterministic tests.
+- Added independent `capturePath`, `capturePeerIp`, `captureUserAgent`, and
+  `captureError` opt-ins plus an injectable monotonic `clock`.
 - Added explicit W3C Trace Context Level 2 configuration, including its
   `tracestate` key grammar and `trace_id_random` projection. Level 1 remains the
   default.
+- Added a conditional consumer-image build as a packaging and integration
+  diagnostic, with Podman-first local builds and Docker fallback. Optional
+  independent audits are informational and never a publication requirement.
 
 ### Changed
 
-- Removed v1 compatibility shims from the plugin options; unknown legacy
-  options now fail construction like every other unsupported key.
-- Set package metadata to `2.0.0` so local package validation cannot produce a
-  breaking artifact mislabeled for the v1 release line.
-- Documented LF-terminated NDJSON as the logging boundary and added raw-writer
-  regression coverage for independently parseable records.
-
-- Preserve a nonempty query-free path from Node's raw request target, including
-  malformed percent triplets that reached Fastify and the `*` target, without a
-  second adapter parser; canonicalize direct peer IP literals; and distinguish
-  response-stream failures from unrelated handler errors.
+- Defined LF-terminated NDJSON as the package logging boundary.
 - Disabled concrete path, direct peer IP, and User-Agent capture by default;
   renamed the opt-in portable peer field from `remote_ip` to `peer_ip`, and
-  made the matching GCP request members conditional on those opt-ins.
-- Aligned the GCP health integration fixture with service version `1.0.0`,
-  operation ID `health_check`, and deterministic `12.5` ms output.
+  made matching GCP request members conditional on those opt-ins. Direct peer
+  IP literals are canonicalized or omitted.
 - Canonicalized retained `tracestate` field-lines while preserving raw wire
   order and valid empty members, without treating 512 characters as a maximum.
 - Treated dash-delimited future-version `traceparent` suffixes as opaque while
   retaining strict validation of the common 55-character prefix.
 - Standardized observable terminal reasons as `client_disconnect`,
-  `body_error`, and `timeout`, and made every abnormal access record use
-  `error` while retaining the one-shot lifecycle guard.
-- **Breaking:** Canonicalized Fastify `:name` and `*` route metadata to portable
+  `body_error`, `response_dropped`, and `timeout`, and made every abnormal
+  access record use `error` while retaining the one-shot lifecycle guard.
+- Canonicalized Fastify `:name` and `*` route metadata to portable
   `{name}` and `{*path}` templates while preserving richer authoritative
   Fastify optional/composite syntax and repeated escaped literal colons.
+
+### Removed
+
+- Removed v1 compatibility shims from the plugin options; unknown legacy
+  options now fail construction like every other unsupported key.
 
 ### Fixed
 
 - Prevented plain application log fields from overriding or duplicating exact
-  envelope, correlation, and selected-profile provider fields. Exact aliases
-  owned only by an inactive profile remain application data. Access enrichment
-  separately protects its exact terminal fields without reserving unrelated
-  names or prefixes.
-- Invoke configured request-ID generators once before package-owned fallback,
+  envelope, correlation, and provider fields owned by the active preset. Exact
+  aliases owned only by an inactive preset remain application data. Access
+  enrichment separately protects its exact terminal fields without reserving
+  unrelated names or prefixes.
+- Invoked configured request-ID generators once before package-owned fallback,
   avoiding duplicate application callback side effects.
-- Classify ambiguous unfinished response closes as `response_dropped`, and
-  observe only the response stream Fastify actually pipes after all `onSend`
+- Classified ambiguous unfinished response closes as `response_dropped`, and
+  observed only the response stream Fastify actually pipes after all `onSend`
   transformations, so discarded payload failures cannot contaminate terminal
   records.
-- Emit GCP `httpRequest.latency` with canonical ProtoJSON fractional widths:
-  0, 3, 6, or 9 digits according to the required precision.
-- Apply the RFC 9110 field-content boundary before custom request-ID validation,
+- Emitted GCP `httpRequest.latency` with canonical ProtoJSON precision across
+  the complete representable range, omitting only an unrepresentable
+  projection.
+- Applied the RFC 9110 field-content boundary before custom request-ID validation,
   admitting internal space, tab, or a comma in one field-line; direct synthetic
   edge-whitespace values remain a native safety check after real HTTP parsing.
-- Preserve framework-valid native route forms, HTTP-safe opaque future
-  `traceparent` suffixes without an invented length cap, custom-admitted native
-  request IDs, HTAB User-Agent values, and nonempty static operation IDs.
-- Preserve portable duration at the GCP protobuf boundary, format the complete
-  representable range without precision loss, and omit only an unrepresentable
-  GCP latency projection.
-
+- Preserved custom-admitted request IDs, HTAB User-Agent values, and nonempty
+  static operation IDs at their native framework boundaries.
+- Preserved nonempty query-free paths from Node's raw request target, including
+  malformed percent triplets and the `*` target, without a second adapter
+  parser.
 - Retained an authoritative committed response status when a timeout terminates
   the body.
 - Preserved sampling while omitting the Level 2 random flag for unknown future
   `traceparent` versions.
-- Retained canonical `path_template` output for valid whole-segment Fastify
-  constraints containing nested or noncapturing regular-expression groups.
+- Retained canonical `path_template` output for valid whole-segment constraints
+  containing nested or noncapturing regular-expression groups.
 
 ## [1.0.1] - 2026-07-17
 

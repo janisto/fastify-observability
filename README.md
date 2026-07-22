@@ -235,7 +235,7 @@ level?)` exposes strict W3C parsing, and `resolveTraceContextLevel(value)`
 returns the effective supported level or throws for any value other than `1`
 or `2`.
 
-## Request context
+## Request and trace context
 
 The immutable context is available throughout Fastify's request lifecycle:
 
@@ -277,7 +277,9 @@ The incoming parent ID identifies the caller's span. The package does not claim
 that it is a span created by this service and does not emit a fake current-span
 field.
 
-## Terminal access record
+## Structured log contract
+
+### Terminal access record
 
 Normal, handled-error, and unhandled-error responses produce one terminal
 record in `onResponse`, using the final status sent on the wire. Authoritative
@@ -338,7 +340,7 @@ request/response, error, prototype, and diagnostic names are ignored. Async or
 otherwise invalid returns and callback failures produce one diagnostic and
 never alter the HTTP response.
 
-## Duplicate-field guarantee
+### Duplicate-field guarantee
 
 Pino pre-serializes child bindings. If a parent and child reuse a name, the raw
 line contains duplicate JSON names even though `bindings()` and `JSON.parse()`
@@ -365,8 +367,8 @@ duplicated:
 5. An application extra field equal to a stable root binding is reused; a
    conflicting extra field is omitted with one diagnostic.
 6. Plain application event objects drop exact envelope, correlation, and
-   selected-profile provider fields before Pino serializes them. Access-only
-   fields and exact aliases owned only by an inactive provider profile remain
+   provider fields owned by the active preset before Pino serializes them.
+   Access-only fields and exact aliases owned only by an inactive preset remain
    application data.
 7. Tests inspect the raw JSON line before parsing it.
 
@@ -452,10 +454,9 @@ compatibility contracts. Breaking changes require a new major release and
 migration guidance in [CHANGELOG.md](CHANGELOG.md). Deep imports are
 unsupported.
 
-The current Unreleased contract changes are reserved for `2.0.0`; see the
-changelog migration section before upgrading a 1.x application.
-Version 2 exposes no v1 option aliases or compatibility shims; applications
-must migrate to the documented v2 configuration surface.
+Version 2 exposes no v1 option aliases or compatibility shims. Applications
+upgrading from 1.x must follow the
+[migration guide](CHANGELOG.md#migration-from-1x).
 
 Development requires [pnpm 11.13.0](https://pnpm.io/installation), pinned by
 the `packageManager` field, and [just](https://github.com/casey/just). With both
@@ -492,7 +493,7 @@ Releases use `pnpm stage publish`, GitHub OIDC, and npm trusted publishing
 without a stored npm write token. See
 [RELEASE.md](https://github.com/janisto/fastify-observability/blob/main/RELEASE.md).
 
-## Planned mutation testing
+## Mutation testing
 
 Mutation testing with
 [StrykerJS](https://github.com/stryker-mutator/stryker-js) is planned once
@@ -500,6 +501,18 @@ upstream [TypeScript 7 support](https://github.com/stryker-mutator/stryker-js/pu
 is merged and included in a release. Until then, Stryker is intentionally not
 installed and no `just mutation` recipe is provided. Add the dependencies,
 configuration, and Justfile recipe together when support is available.
+
+## Consumer image
+
+Run `just e2e-image observability-e2e-local:manual` to build a
+production-shaped consumer image from the exact checkout. The recipe prefers
+Podman and falls back to Docker.
+
+Building the image verifies packaging and integration only. It does not run the
+image, validate emitted logs, compare implementations, or approve a release.
+Optional independent tooling may exercise the public contract documented in
+[`e2e/README.md`](e2e/README.md). Any audit result is informational and is never
+a publication requirement.
 
 ## References
 
@@ -536,4 +549,4 @@ configuration, and Justfile recipe together when support is available.
 
 ## License
 
-MIT
+[MIT](LICENSE)

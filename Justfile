@@ -2,6 +2,8 @@
 # https://github.com/casey/just
 # Local development and package checks for fastify-observability.
 
+CONTAINER_RUNTIME := if `command -v podman 2>/dev/null || true` != "" { "podman" } else { "docker" }
+
 @_:
     just --list
 
@@ -61,10 +63,10 @@ build: clean-dist
 package-check: qa
     pnpm package:check
 
-# Build the production-shaped E2E consumer image with a central-supplied tag.
+# Build the production-shaped consumer image with a caller-selected tag.
 [group('package')]
 e2e-image image_tag:
-    docker build --file e2e/Dockerfile --tag "{{ image_tag }}" .
+    {{ CONTAINER_RUNTIME }} build --file e2e/Dockerfile --tag "{{ image_tag }}" .
 
 # Install dependencies exactly as locked.
 [group('lifecycle')]
