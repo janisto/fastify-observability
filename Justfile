@@ -61,6 +61,11 @@ build: clean-dist
 package-check: qa
     pnpm package:check
 
+# Build the production-shaped E2E consumer image with a central-supplied tag.
+[group('package')]
+e2e-image image_tag:
+    docker build --file e2e/Dockerfile --tag "{{ image_tag }}" .
+
 # Install dependencies exactly as locked.
 [group('lifecycle')]
 install:

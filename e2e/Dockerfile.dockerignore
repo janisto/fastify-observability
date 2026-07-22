@@ -1,0 +1,11 @@
+.git
+.github
+.pnpm-store
+artifacts
+coverage
+dist
+node_modules
+plans
+*.tgz
+e2e/dist
+e2e/node_modules
