@@ -79,19 +79,36 @@ into human onboarding documentation.
   version tags.
 - `just qa` must run `actionlint` and `zizmor --offline .` in addition to the
   repository's language checks.
+- Do not add standalone repository scripts, including under `.github`. Enforce
+  repository policy through the existing native test suite and tooling.
 - Keep `.github/zizmor.yml` aligned with the exact-tag policy and the
   one-day Dependabot cooldown.
 
 ## Releases
 
-- Prepare releases through a pull request titled `chore: prepare vX.Y.Z`.
+- Prepare releases from a same-repository source branch named
+  `release/prepare-vX.Y.Z` through a pull request titled
+  `chore: prepare vX.Y.Z` that targets `main`.
+- Use the `release/` namespace only for release preparation branches.
+- The conditional `Consumer image build` job on a release preparation pull
+  request is a build-only packaging and integration diagnostic. It does not run
+  the image, validate emitted logs, or approve a release.
+- For local image-build diagnosis, run
+  `just e2e-image observability-e2e-local:manual`. The Justfile prefers Podman
+  and falls back to Docker.
+- Keep `e2e/README.md` self-contained as the public consumer-image interface.
+  Independent audits are optional and informational; they never approve or
+  block publication.
 - Update `package.json`, `CHANGELOG.md`, applicable lockfile metadata, and
   public documentation together.
 - Run `just install`, `just qa`, `just package-check`, `just audit`, and
   `git diff --check`.
 - Run `just package-check` whenever package contents or release metadata change.
-- Merge a green pull request to `main`, then release the exact reviewed commit
-  with tag `vX.Y.Z`.
+- Merge a green pull request to `main`, then release the exact final merged
+  commit with tag `vX.Y.Z`.
+- Publishing the reviewed GitHub Release authorizes npm staging; approving the
+  inspected npm stage with 2FA authorizes publication. This manual maintainer
+  decision is the release authority.
 - When drafting a stable GitHub Release, use **Generate release notes** and mark
   it as **Latest**. Edit the notes for accuracy and alignment with
   `CHANGELOG.md` before publishing.

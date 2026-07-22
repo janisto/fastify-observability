@@ -1,7 +1,8 @@
 import { get as httpGet, request as httpRequest } from "node:http";
 import { connect as connectHttp2, type IncomingHttpHeaders } from "node:http2";
-import { Readable } from "node:stream";
-import Fastify, { LogController } from "fastify";
+import { connect as connectTcp } from "node:net";
+import { PassThrough, Readable } from "node:stream";
+import Fastify, { LogController, type onSendHookHandler } from "fastify";
 import fastifyObservability, {
   createObservabilityLogger,
   createRequestIdGenerator,
@@ -50,6 +51,144 @@ async function waitForAccessRecords(stream: JsonLineStream, expected: number) {
 }
 
 describe("real network lifecycle", () => {
+  it("rejects a lowercase extension method before Fastify constructs a request", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({ destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    const parserError = new Promise<string | undefined>((resolve) => {
+      app.server.once("clientError", (error) => resolve((error as NodeJS.ErrnoException).code));
+    });
+    await new Promise<void>((resolve, reject) => {
+      const socket = connectTcp({ host: "127.0.0.1", port: serverPort(app) }, () => {
+        socket.write("m-SEARCH /extension-search HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+      });
+      socket.setTimeout(1_000, () => socket.destroy(new Error("raw method request timed out")));
+      socket.on("data", () => undefined);
+      socket.once("error", reject);
+      socket.once("close", () => resolve());
+    });
+
+    expect(await parserError).toBe("HPE_INVALID_METHOD");
+    expect(accessRecords(stream.records)).toEqual([]);
+  });
+
+  it("handles native empty and asterisk paths without fabricating pre-routing rejects", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({ destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability, { capturePath: true });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    const requestTarget = (path: string, method = "GET") =>
+      new Promise<number | undefined>((resolve, reject) => {
+        const request = httpRequest({ host: "127.0.0.1", port: serverPort(app), method, path }, (incoming) => {
+          incoming.resume();
+          incoming.once("end", () => resolve(incoming.statusCode));
+        });
+        request.once("error", reject);
+        request.end();
+      });
+
+    expect(await requestTarget("/objects/bad%2")).toBe(404);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(accessRecords(stream.records)).toEqual([]);
+
+    expect(await requestTarget("http://example.test")).toBe(404);
+    const absoluteFormRecords = await waitForAccessRecords(stream, 1);
+    expect(absoluteFormRecords[0]).toMatchObject({ method: "GET", status: 404 });
+    expect(absoluteFormRecords[0]?.["path"]).toBeUndefined();
+
+    expect(await requestTarget("*", "OPTIONS")).toBe(404);
+    const records = await waitForAccessRecords(stream, 2);
+    expect(records[1]).toMatchObject({ method: "OPTIONS", path: "*", status: 404 });
+  });
+
+  it("replaces duplicate and invalid request IDs before response and terminal output", async () => {
+    const stream = new JsonLineStream();
+    const generated = ["duplicate-replaced", "generated-safe"];
+    const clockValues = [0, 2, 10, 11];
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator({ generate: () => generated.shift() ?? "unexpected-generated" }),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability, { clock: () => clockValues.shift() ?? 99 });
+    app.get("/request-id", (_request, reply) => reply.code(204).send());
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    const duplicateResponse = await new Promise<{ requestId: string | undefined; status: number | undefined }>(
+      (resolve, reject) => {
+        const request = httpRequest(
+          {
+            host: "127.0.0.1",
+            port: serverPort(app),
+            path: "/request-id",
+            headers: { "x-request-id": ["caller-one", "caller-two"] },
+          },
+          (incoming) => {
+            incoming.resume();
+            incoming.on("end", () =>
+              resolve({
+                requestId: incoming.headers["x-request-id"] as string | undefined,
+                status: incoming.statusCode,
+              }),
+            );
+          },
+        );
+        request.once("error", reject);
+        request.end();
+      },
+    );
+    const invalidResponse = await fetch(`http://127.0.0.1:${serverPort(app)}/request-id`, {
+      headers: { "x-request-id": "bad value" },
+    });
+    await invalidResponse.arrayBuffer();
+
+    expect(duplicateResponse).toEqual({ requestId: "duplicate-replaced", status: 204 });
+    expect(invalidResponse.status).toBe(204);
+    expect(invalidResponse.headers.get("x-request-id")).toBe("generated-safe");
+    const records = await waitForAccessRecords(stream, 2);
+    expect(records).toEqual([
+      expect.objectContaining({
+        message: "request completed",
+        request_id: "duplicate-replaced",
+        correlation_id: "duplicate-replaced",
+        method: "GET",
+        duration_ms: 2,
+        status: 204,
+        path_template: "/request-id",
+      }),
+      expect.objectContaining({
+        message: "request completed",
+        request_id: "generated-safe",
+        correlation_id: "generated-safe",
+        method: "GET",
+        duration_ms: 1,
+        status: 204,
+        path_template: "/request-id",
+      }),
+    ]);
+    const raw = stream.lines.join("\n");
+    for (const forbidden of ["caller-one", "caller-two", "bad value"]) {
+      expect(raw).not.toContain(forbidden);
+    }
+  });
+
   it("rejects duplicate request IDs over HTTP/1.1 and isolates concurrent requests", async () => {
     const stream = new JsonLineStream();
     const app = Fastify({
@@ -59,7 +198,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePath: true });
     app.get("/", (request) => ({ requestId: request.observability.requestId }));
     await app.listen({ host: "127.0.0.1", port: 0 });
 
@@ -119,7 +258,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePath: true });
     let releaseSlowRoute: () => void = () => undefined;
     const slowRoute = new Promise<void>((resolve) => {
       releaseSlowRoute = resolve;
@@ -163,7 +302,65 @@ describe("real network lifecycle", () => {
     expect(topLevelKeyOccurrences(line, "status")).toBe(0);
   });
 
-  it("emits one request-aborted record for an incomplete upload", async () => {
+  it("retains a committed status when timeout wins after headers", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      connectionTimeout: 30,
+      loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability, { capturePath: true });
+    let releaseSlowRoute: () => void = () => undefined;
+    const slowRoute = new Promise<void>((resolve) => {
+      releaseSlowRoute = resolve;
+    });
+    app.get("/partial", async (_request, reply) => {
+      reply.raw.writeHead(206, { "content-type": "text/plain" });
+      reply.raw.write("partial");
+      await slowRoute;
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    try {
+      await new Promise<void>((resolve) => {
+        const request = httpGet(`http://127.0.0.1:${serverPort(app)}/partial`, (response) => {
+          expect(response.statusCode).toBe(206);
+          response.resume();
+          response.once("close", resolve);
+        });
+        request.once("error", () => resolve());
+        request.once("close", () => resolve());
+      });
+      await waitForAccessRecords(stream, 1);
+    } finally {
+      releaseSlowRoute();
+      try {
+        await app.close();
+      } finally {
+        const index = openApps.indexOf(app);
+        if (index !== -1) {
+          openApps.splice(index, 1);
+        }
+      }
+    }
+
+    const records = accessRecords(stream.records);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ level: 50, status: 206, terminal_reason: "timeout" });
+    const line = stream.lines.find(
+      (candidate) => (JSON.parse(candidate) as { message?: string }).message === "request completed",
+    );
+    if (line === undefined) {
+      throw new Error("expected one raw timeout record");
+    }
+    expect(topLevelKeyOccurrences(line, "status")).toBe(1);
+    expect(topLevelKeyOccurrences(line, "terminal_reason")).toBe(1);
+  });
+
+  it("emits one client-disconnect record for an incomplete upload", async () => {
     const stream = new JsonLineStream();
     const app = Fastify({
       loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
@@ -172,7 +369,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePath: true });
     app.post("/upload", () => ({ ok: true }));
     await app.listen({ host: "127.0.0.1", port: 0 });
 
@@ -191,8 +388,8 @@ describe("real network lifecycle", () => {
     });
     const records = await waitForAccessRecords(stream, 1);
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ level: 40, terminal_reason: "request_aborted" });
-    expect(records[0]?.["status"]).toBeUndefined();
+    expect(records[0]).toMatchObject({ level: 50, terminal_reason: "client_disconnect" });
+    expect(records[0]?.["status"]).toBe(400);
     expect(records[0]?.["err"]).toBeUndefined();
   });
 
@@ -206,7 +403,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePath: true });
     app.get("/h2", (request) => ({ requestId: request.observability.requestId }));
     await app.listen({ host: "127.0.0.1", port: 0 });
 
@@ -257,7 +454,7 @@ describe("real network lifecycle", () => {
       logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
     });
     openApps.push(app);
-    await app.register(fastifyObservability);
+    await app.register(fastifyObservability, { capturePath: true, captureError: true });
     app.get("/broken", (_request, reply) => {
       let started = false;
       const body = new Readable({
@@ -294,17 +491,178 @@ describe("real network lifecycle", () => {
     expect(records[0]).toMatchObject({
       level: 50,
       status: 200,
-      terminal_reason: "response_aborted",
+      terminal_reason: "body_error",
       err: { message: "stream exploded" },
     });
     const line = stream.lines.find(
       (candidate) => (JSON.parse(candidate) as { message?: string }).message === "request completed",
     );
     if (line === undefined) {
-      throw new Error("expected one raw response-aborted record");
+      throw new Error("expected one raw body-error record");
     }
     for (const key of ["status", "terminal_reason", "err"]) {
       expect(topLevelKeyOccurrences(line, key)).toBe(1);
     }
+  });
+
+  it("observes a failing stream installed by a later onRoute hook", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability, { captureError: true });
+    app.addHook("onRoute", (routeOptions) => {
+      const installFailingStream: onSendHookHandler = (_request, reply, _payload, next) => {
+        let started = false;
+        const body = new Readable({
+          read() {
+            if (started) return;
+            started = true;
+            this.push("partial");
+            setTimeout(() => this.destroy(new Error("later stream exploded")), 10);
+          },
+        });
+        reply.type("text/plain");
+        next(null, body);
+      };
+      const existing = routeOptions.onSend;
+      routeOptions.onSend =
+        existing === undefined
+          ? installFailingStream
+          : Array.isArray(existing)
+            ? [...existing, installFailingStream]
+            : [existing, installFailingStream];
+    });
+    app.get("/later-stream", () => "original");
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    await new Promise<void>((resolve) => {
+      const request = httpGet(`http://127.0.0.1:${serverPort(app)}/later-stream`, (response) => {
+        response.resume();
+        response.once("end", resolve);
+        response.once("aborted", resolve);
+        response.once("error", resolve);
+        response.once("close", resolve);
+      });
+      request.once("error", resolve);
+    });
+
+    const records = await waitForAccessRecords(stream, 1);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      level: 50,
+      status: 200,
+      terminal_reason: "body_error",
+      err: { message: "later stream exploded" },
+    });
+  });
+
+  it("does not turn a completed-request disconnect into a discarded stream body error", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability, { captureError: true });
+    let enterReplacement: () => void = () => undefined;
+    const replacementEntered = new Promise<void>((resolve) => {
+      enterReplacement = resolve;
+    });
+    let releaseReplacement: () => void = () => undefined;
+    const replacementReleased = new Promise<void>((resolve) => {
+      releaseReplacement = resolve;
+    });
+    app.addHook("onRoute", (routeOptions) => {
+      const delayedReplacement: onSendHookHandler = async () => {
+        enterReplacement();
+        await replacementReleased;
+        return "healthy";
+      };
+      const existing = routeOptions.onSend;
+      routeOptions.onSend =
+        existing === undefined
+          ? delayedReplacement
+          : Array.isArray(existing)
+            ? [...existing, delayedReplacement]
+            : [existing, delayedReplacement];
+    });
+    let discarded: PassThrough | undefined;
+    app.get("/discarded-before-close", () => {
+      discarded = new PassThrough();
+      discarded.on("error", () => undefined);
+      return discarded;
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    const request = httpGet(`http://127.0.0.1:${serverPort(app)}/discarded-before-close`);
+    request.on("error", () => undefined);
+    try {
+      await replacementEntered;
+      discarded?.destroy(new Error("discarded stream"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      request.destroy();
+
+      const records = await waitForAccessRecords(stream, 1);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ level: 50, terminal_reason: "response_dropped" });
+      expect(records[0]?.["err"]).toBeUndefined();
+    } finally {
+      releaseReplacement();
+      request.destroy();
+    }
+  });
+
+  it("records a failing not-found response stream as a body error", async () => {
+    const stream = new JsonLineStream();
+    const app = Fastify({
+      loggerInstance: createObservabilityLogger({ level: "debug", destination: stream }),
+      requestIdHeader: false,
+      genReqId: createRequestIdGenerator(),
+      logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
+    });
+    openApps.push(app);
+    await app.register(fastifyObservability, { captureError: true });
+    app.setNotFoundHandler((_request, reply) => {
+      let started = false;
+      return reply.send(
+        new Readable({
+          read() {
+            if (started) return;
+            started = true;
+            this.push("partial");
+            setTimeout(() => this.destroy(new Error("not-found stream failed")), 5);
+          },
+        }),
+      );
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+
+    await new Promise<void>((resolve) => {
+      const request = httpGet(`http://127.0.0.1:${serverPort(app)}/missing`, (response) => {
+        expect(response.statusCode).toBe(200);
+        response.resume();
+        response.once("end", resolve);
+        response.once("aborted", resolve);
+        response.once("error", resolve);
+        response.once("close", resolve);
+      });
+      request.once("error", resolve);
+    });
+
+    const records = await waitForAccessRecords(stream, 1);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      level: 50,
+      status: 200,
+      terminal_reason: "body_error",
+      err: { message: "not-found stream failed" },
+    });
   });
 });

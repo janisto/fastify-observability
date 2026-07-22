@@ -1,10 +1,11 @@
+import { isIP } from "node:net";
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from "fastify";
 import type { NormalizedOptions } from "./context.js";
-import { bindingValuesEqual, PROTECTED_LOG_FIELDS } from "./logger.js";
-import { rawHeaderValues } from "./request-id.js";
+import { bindingValuesEqual, isProtectedLogField, markTrustedLogFields, PROTECTED_LOG_FIELDS } from "./logger.js";
+import { isNativeFieldContent, rawHeaderValues } from "./request-id.js";
 import type { AccessLogLevel } from "./types.js";
 
-export type TerminalReason = "response" | "timeout" | "request_aborted" | "response_aborted";
+export type TerminalReason = "response" | "timeout" | "client_disconnect" | "response_dropped" | "body_error";
 
 interface AccessLogger extends FastifyBaseLogger {
   isLevelEnabled(level: AccessLogLevel): boolean;
@@ -12,6 +13,7 @@ interface AccessLogger extends FastifyBaseLogger {
 
 export interface AccessState {
   readonly started: number;
+  readonly clock: () => number;
   readonly request: FastifyRequest;
   readonly reply: FastifyReply;
   readonly options: NormalizedOptions;
@@ -19,12 +21,14 @@ export interface AccessState {
   readonly loggerBindings: Readonly<Record<string, unknown>>;
   readonly inspectLoggerBindings?: () => Readonly<Record<string, unknown>>;
   logger: AccessLogger;
-  remoteIp: string | undefined;
+  peerIp: string | undefined;
   userAgent: string | undefined;
   error?: Error;
+  streamFailed: boolean;
   emitted: boolean;
   suppressAccess: boolean;
   closeListener?: () => void;
+  pipeListener?: (source: unknown) => void;
   stream?: StreamLike;
   streamErrorListener?: (error: Error) => void;
 }
@@ -35,7 +39,9 @@ interface StreamLike {
 }
 
 export const RESERVED_FIELDS = new Set([
-  ...PROTECTED_LOG_FIELDS,
+  ...[...PROTECTED_LOG_FIELDS].filter((key) =>
+    (["default", "gcp", "aws", "azure"] as const).every((preset) => isProtectedLogField(key, preset)),
+  ),
   "name",
   "logger",
   "req",
@@ -48,23 +54,163 @@ export const RESERVED_FIELDS = new Set([
 
 const ACCESS_LOG_LEVELS: readonly AccessLogLevel[] = ["debug", "info", "warn", "error"];
 
-export function requestPath(rawUrl: string | undefined): string {
-  if (rawUrl === undefined || rawUrl.length === 0) {
-    return "/";
-  }
+export function requestPath(rawUrl: string | undefined): string | undefined {
   if (rawUrl === "*") {
     return rawUrl;
   }
-  if (rawUrl.startsWith("/")) {
-    const query = rawUrl.indexOf("?");
-    return query === -1 ? rawUrl : rawUrl.slice(0, query);
+  if (rawUrl === undefined || !rawUrl.startsWith("/")) {
+    return undefined;
   }
-  try {
-    const parsed = new URL(rawUrl, "http://localhost");
-    return parsed.pathname || "/";
-  } catch {
-    return "/";
+  const query = rawUrl.indexOf("?");
+  const fragment = rawUrl.indexOf("#");
+  const delimiter = [query, fragment]
+    .filter((index) => index >= 0)
+    .reduce((first, index) => Math.min(first, index), rawUrl.length);
+  return rawUrl.slice(0, delimiter) || undefined;
+}
+
+export function canonicalPeerIp(candidate: string | undefined): string | undefined {
+  if (candidate === undefined || candidate.includes("%")) {
+    return undefined;
   }
+  const version = isIP(candidate);
+  if (version === 4) {
+    return candidate;
+  }
+  if (version !== 6) {
+    return undefined;
+  }
+  const hostname = new URL(`http://[${candidate}]/`).hostname;
+  return hostname.slice(1, -1);
+}
+
+const MAX_PROTOBUF_DURATION_MILLISECONDS_EXCLUSIVE = 315_576_000_001_000;
+
+function splitRouteSegments(template: string): string[] {
+  const segments: string[] = [];
+  let segment = "";
+  let escaped = false;
+  for (const character of template.slice(1)) {
+    if (escaped) {
+      segment += `\\${character}`;
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === "/") {
+      segments.push(segment);
+      segment = "";
+    } else {
+      segment += character;
+    }
+  }
+  if (escaped) {
+    segment += "\\";
+  }
+  segments.push(segment);
+  return segments;
+}
+
+export function canonicalRouteTemplate(nativeTemplate: string): string | undefined {
+  if (nativeTemplate.length === 0) {
+    return undefined;
+  }
+  if (nativeTemplate === "*") {
+    return "/{*path}";
+  }
+  if (!nativeTemplate.startsWith("/")) {
+    return nativeTemplate;
+  }
+  const canonical: string[] = [];
+  const segments = splitRouteSegments(nativeTemplate);
+  for (const [index, segment] of segments.entries()) {
+    if (segment === "*") {
+      if (index !== segments.length - 1) {
+        return undefined;
+      }
+      canonical.push("{*path}");
+      continue;
+    }
+    if (segment.startsWith(":") && !segment.endsWith("?")) {
+      const constraintStart = segment.indexOf("(");
+      const name = segment.slice(1, constraintStart === -1 ? undefined : constraintStart);
+      const constraint = constraintStart === -1 ? "" : segment.slice(constraintStart);
+      if (
+        name.length === 0 ||
+        [...name].some((character) => "/{}*:".includes(character)) ||
+        (constraint !== "" && !isRouteConstraint(constraint))
+      ) {
+        return nativeTemplate;
+      }
+      canonical.push(`{${name}}`);
+      continue;
+    }
+    const staticSegment = unescapeStaticRouteSegment(segment);
+    if (staticSegment === undefined || /[*{}]/.test(segment)) {
+      return nativeTemplate;
+    }
+    canonical.push(staticSegment);
+  }
+  return `/${canonical.join("/")}`;
+}
+
+function unescapeStaticRouteSegment(segment: string): string | undefined {
+  let result = "";
+  for (let index = 0; index < segment.length; index += 1) {
+    const character = segment[index];
+    if (character !== ":") {
+      result += character;
+      continue;
+    }
+    if (segment[index + 1] !== ":") {
+      return undefined;
+    }
+    result += ":";
+    index += 1;
+  }
+  return result;
+}
+
+function isRouteConstraint(value: string): boolean {
+  if (!value.startsWith("(") || !value.endsWith(")")) {
+    return false;
+  }
+  let depth = 0;
+  let escaped = false;
+  let inCharacterClass = false;
+  const characters = [...value];
+  for (const [index, character] of characters.entries()) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (character === "[" && !inCharacterClass) {
+      inCharacterClass = true;
+      continue;
+    }
+    if (character === "]" && inCharacterClass) {
+      inCharacterClass = false;
+      continue;
+    }
+    if (inCharacterClass) {
+      continue;
+    }
+    if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth === 0 && index !== characters.length - 1) {
+        return false;
+      }
+      if (depth < 0) {
+        return false;
+      }
+    }
+  }
+  return depth === 0 && !escaped && !inCharacterClass;
 }
 
 function operationId(request: FastifyRequest): string | undefined {
@@ -82,19 +228,44 @@ function operationId(request: FastifyRequest): string | undefined {
 
 export function requestUserAgent(request: FastifyRequest): string | undefined {
   const values = rawHeaderValues(request.raw, "user-agent");
-  return values.length === 1 && values[0] !== undefined ? values[0] : undefined;
+  const value = values.length === 1 ? values[0] : undefined;
+  if (value === undefined || value.length === 0) {
+    return undefined;
+  }
+  return isNativeFieldContent(value) ? value : undefined;
 }
 
-function durationMilliseconds(started: number): number {
-  const value = performance.now() - started;
-  return Number.isFinite(value) && value > 0 ? value : 0;
+function durationMilliseconds(state: AccessState): number {
+  let value: number;
+  try {
+    value = state.clock() - state.started;
+  } catch {
+    state.diagnose("clock", "clock failed; access duration fell back to zero");
+    return 0;
+  }
+  if (!Number.isFinite(value)) {
+    state.diagnose("clock", "clock returned a non-finite value; access duration fell back to zero");
+    return 0;
+  }
+  return value > 0 ? value : 0;
 }
 
-function protobufDuration(durationMs: number): string {
-  const nanoseconds = Math.max(Math.round(durationMs * 1_000_000), 0);
-  const seconds = Math.floor(nanoseconds / 1_000_000_000);
-  const nanos = nanoseconds % 1_000_000_000;
-  return nanos === 0 ? `${seconds}s` : `${seconds}.${String(nanos).padStart(9, "0").replace(/0+$/, "")}s`;
+function protobufDuration(durationMs: number): string | undefined {
+  if (durationMs >= MAX_PROTOBUF_DURATION_MILLISECONDS_EXCLUSIVE) {
+    return undefined;
+  }
+  let seconds = Math.floor(durationMs / 1_000);
+  let nanos = Math.max(Math.round((durationMs - seconds * 1_000) * 1_000_000), 0);
+  if (nanos === 1_000_000_000) {
+    seconds += 1;
+    nanos = 0;
+  }
+  if (nanos === 0) {
+    return `${seconds}s`;
+  }
+  const precision = nanos % 1_000_000 === 0 ? 3 : nanos % 1_000 === 0 ? 6 : 9;
+  const fraction = String(nanos / 10 ** (9 - precision)).padStart(precision, "0");
+  return `${seconds}.${fraction}s`;
 }
 
 function defaultLevel(status: number): AccessLogLevel {
@@ -141,7 +312,7 @@ function copyExtraFields(
     }
     const custom = Object.create(null) as Record<string, unknown>;
     for (const key of Object.keys(result)) {
-      if (RESERVED_FIELDS.has(key)) {
+      if (RESERVED_FIELDS.has(key) || isProtectedLogField(key, state.options.preset)) {
         continue;
       }
       const value = result[key];
@@ -168,24 +339,32 @@ function accessFields(
   loggerBindings: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
   const request = state.request;
-  const durationMs = durationMilliseconds(state.started);
-  const path = requestPath(request.raw.url);
+  const durationMs = durationMilliseconds(state);
+  const path = state.options.capturePath ? requestPath(request.raw.url) : undefined;
   const fields: Record<string, unknown> = {};
   fields["method"] = request.method;
-  fields["path"] = path;
-  if (!request.is404 && request.routeOptions.url !== undefined) {
-    fields["path_template"] = request.routeOptions.url;
+  if (path !== undefined) {
+    fields["path"] = path;
   }
-  const explicitOperationId = operationId(request);
-  if (explicitOperationId !== undefined) {
-    fields["operation_id"] = explicitOperationId;
+  if (!request.is404) {
+    const routeUrl: unknown = request.routeOptions.url;
+    if (typeof routeUrl === "string") {
+      const pathTemplate = canonicalRouteTemplate(routeUrl);
+      if (pathTemplate !== undefined) {
+        fields["path_template"] = pathTemplate;
+      }
+    }
+    const explicitOperationId = operationId(request);
+    if (explicitOperationId !== undefined) {
+      fields["operation_id"] = explicitOperationId;
+    }
   }
   if (status !== undefined) {
     fields["status"] = status;
   }
   fields["duration_ms"] = durationMs;
-  if (state.remoteIp !== undefined) {
-    fields["remote_ip"] = state.remoteIp;
+  if (state.peerIp !== undefined) {
+    fields["peer_ip"] = state.peerIp;
   }
   const agent = state.userAgent;
   if (agent !== undefined) {
@@ -194,19 +373,24 @@ function accessFields(
   if (reason !== "response") {
     fields["terminal_reason"] = reason;
   }
-  if (state.error !== undefined) {
+  if (state.options.captureError && state.error !== undefined) {
     fields["err"] = state.error;
   }
   if (state.options.preset === "gcp") {
     const httpRequest: Record<string, unknown> = {};
     httpRequest["requestMethod"] = request.method;
-    httpRequest["requestUrl"] = path;
+    if (path !== undefined) {
+      httpRequest["requestUrl"] = path;
+    }
     if (status !== undefined) {
       httpRequest["status"] = status;
     }
-    httpRequest["latency"] = protobufDuration(durationMs);
-    if (state.remoteIp !== undefined) {
-      httpRequest["remoteIp"] = state.remoteIp;
+    const latency = protobufDuration(durationMs);
+    if (latency !== undefined) {
+      httpRequest["latency"] = latency;
+    }
+    if (state.peerIp !== undefined) {
+      httpRequest["remoteIp"] = state.peerIp;
     }
     if (agent !== undefined) {
       httpRequest["userAgent"] = agent;
@@ -240,6 +424,15 @@ export function cleanupListeners(state: AccessState): void {
       delete state.closeListener;
     }
   }
+  if (state.pipeListener !== undefined) {
+    try {
+      state.reply.raw.removeListener("pipe", state.pipeListener);
+    } catch {
+      state.diagnose("stream_listener_cleanup", "response pipe-listener cleanup failed");
+    } finally {
+      delete state.pipeListener;
+    }
+  }
   if (state.stream !== undefined && state.streamErrorListener !== undefined) {
     try {
       state.stream.removeListener("error", state.streamErrorListener);
@@ -253,6 +446,16 @@ export function cleanupListeners(state: AccessState): void {
 }
 
 export function observeStream(state: AccessState, payload: unknown): void {
+  if (state.stream !== undefined && state.streamErrorListener !== undefined) {
+    try {
+      state.stream.removeListener("error", state.streamErrorListener);
+    } catch {
+      state.diagnose("stream_listener_cleanup", "response stream-listener cleanup failed");
+    } finally {
+      delete state.stream;
+      delete state.streamErrorListener;
+    }
+  }
   if (payload === null || typeof payload !== "object") {
     return;
   }
@@ -262,6 +465,7 @@ export function observeStream(state: AccessState, payload: unknown): void {
   }
   const stream = candidate as StreamLike;
   const listener = (error: Error) => {
+    state.streamFailed = true;
     state.error = error instanceof Error ? error : new Error("response stream failed");
   };
   state.stream = stream;
@@ -296,12 +500,7 @@ export function emitAccessRecord(state: AccessState, reason: TerminalReason, sta
     if (!ACCESS_LOG_LEVELS.some((candidate) => state.logger.isLevelEnabled(candidate))) {
       return;
     }
-    const level =
-      reason === "response" && status !== undefined
-        ? normalLevel(state, status)
-        : state.error !== undefined || reason === "timeout"
-          ? "error"
-          : "warn";
+    const level = reason === "response" ? (status === undefined ? "info" : normalLevel(state, status)) : "error";
     if (!state.logger.isLevelEnabled(level)) {
       return;
     }
@@ -310,7 +509,7 @@ export function emitAccessRecord(state: AccessState, reason: TerminalReason, sta
       return;
     }
     const fields = accessFields(state, reason, status, loggerBindings);
-    state.logger[level](fields, state.options.message);
+    state.logger[level](markTrustedLogFields(fields), "request completed");
   } catch {
     state.diagnose("logger", "access log emission failed; the HTTP response was preserved");
   }

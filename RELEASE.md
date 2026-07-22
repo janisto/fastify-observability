@@ -111,11 +111,40 @@ The workflow intentionally does not pass `registry-url` to
 OIDC staging does not need that placeholder; `package.json#publishConfig`
 selects the public npm registry instead.
 
+## Release preparation branch and consumer image
+
+Every release preparation uses a same-repository source branch named
+`release/prepare-vX.Y.Z`, targets `main`, and uses the pull request title
+`chore: prepare vX.Y.Z`. The branch and title versions must agree with the
+version being released. When this repository permits a prerelease, use its
+exact reviewed prerelease suffix in both the branch and title. Use the
+`release/` namespace only for this process.
+
+The conditional `Consumer image build` CI job runs for a same-repository
+release preparation pull request targeting `main`. It builds the
+production-shaped consumer with
+`just e2e-image observability-e2e-local:ci`. The build verifies packaging and
+integration only. It does not run the image, validate emitted logs, compare
+implementations, or approve a release. It is not a required status check. For
+local image diagnosis, run:
+
+```bash
+just e2e-image observability-e2e-local:manual
+```
+
+The recipe prefers Podman and falls back to Docker.
+
+Optional independent tooling may exercise the public contract documented in
+[`e2e/README.md`](e2e/README.md). Any audit result is informational only; it is
+never a publication requirement and neither approves nor blocks publication.
+The maintainer authorizes the release through the manual GitHub Release and npm
+staged-publication steps documented below.
+
 ## Maintainer release guide
 
 ### 1. Prepare the version
 
-Create a normal review branch and:
+Create `release/prepare-vX.Y.Z` from the current `main` branch and:
 
 1. update `package.json.version`;
 2. add the release date and user-visible changes to `CHANGELOG.md`;
@@ -150,7 +179,10 @@ The release workflow intentionally continues to invoke pnpm directly. GitHub
 Actions starts from a fresh checkout, while the Justfile is the maintainer-facing
 local workflow and cleanup layer.
 
-Merge the release preparation through a green pull request to `main`.
+Merge the release preparation through a green pull request. If the conditional
+`Consumer image build` ran, inspect its result as an additional packaging
+diagnostic. The maintainer then decides whether to release the exact final
+merged commit; no external audit approval is required.
 
 ### 3. Publish the GitHub Release
 
@@ -159,7 +191,7 @@ From the repository's GitHub Releases page:
 1. create a draft release;
 2. create the tag `vX.Y.Z`, where `X.Y.Z` exactly matches
    `package.json.version`;
-3. target the exact reviewed commit on `main`;
+3. target the exact final merged commit on `main`;
 4. use `vX.Y.Z` as the title;
 5. click **Generate release notes**;
 6. review the generated previous tag, merged pull requests, contributors, and
@@ -175,12 +207,34 @@ select **This is a pre-release** and do not select **Set as latest release**;
 the workflow stages it with npm dist-tag `next` instead of replacing the stable
 GitHub Latest release or npm `latest` dist-tag.
 
-The equivalent draft-first GitHub CLI flow is:
+For the equivalent draft-first GitHub CLI flow, set `TARGET` to the final merged
+commit shown by the release preparation pull request, not merely the current
+`main` tip. Start from a clean checkout, check out that exact commit, and derive
+the package version from it:
 
 ```bash
-VERSION="$(node -p "require('./package.json').version")"
+set -euo pipefail
 git fetch origin main
-TARGET="$(git rev-parse origin/main)"
+test -z "$(git status --porcelain)"
+TARGET="<exact-merged-release-commit>"
+test "$(git cat-file -t "$TARGET")" = commit
+git merge-base --is-ancestor "$TARGET" origin/main
+git switch --detach "$TARGET"
+
+VERSION="$(node -p "require('./package.json').version")"
+test "$(git rev-parse HEAD)" = "$TARGET"
+test -z "$(git status --porcelain)"
+```
+
+Confirm that no remote tag, GitHub Release, or npm version already exists for
+`VERSION`. Then create the draft from the selected commit:
+
+```bash
+set -euo pipefail
+test -n "${TARGET:-}"
+test -n "${VERSION:-}"
+test "$(git rev-parse HEAD)" = "$TARGET"
+test -z "$(git status --porcelain)"
 
 gh release create "v$VERSION" \
   --target "$TARGET" \
@@ -192,10 +246,6 @@ gh release create "v$VERSION" \
 
 gh release view "v$VERSION" --web
 ```
-
-Before creating the draft, verify that `TARGET` is the exact reviewed commit
-that should be released. Do not use a newer unreviewed `main` commit merely
-because it is currently at the branch tip.
 
 After reviewing the draft in the browser, publish the unchanged stable release
 and explicitly preserve its Latest label:
@@ -224,9 +274,10 @@ nothing to approve.
 An authenticated maintainer can inspect the same stage with the pnpm CLI:
 
 ```bash
+STAGE_ID="<stage-id>"
 pnpm stage list fastify-observability
-pnpm stage view <stage-id>
-pnpm stage download <stage-id>
+pnpm stage view "$STAGE_ID"
+pnpm stage download "$STAGE_ID"
 ```
 
 Check the package name, version, dist-tag, file list, integrity, repository,
@@ -240,7 +291,8 @@ selected staged package and complete the interactive 2FA prompt. Alternatively,
 approve through the authenticated pnpm CLI:
 
 ```bash
-pnpm stage approve <stage-id>
+STAGE_ID="<stage-id>"
+pnpm stage approve "$STAGE_ID"
 ```
 
 Use the interactive pnpm or website prompt for 2FA. Never place an OTP, recovery
@@ -277,7 +329,7 @@ Finally, verify:
 
 - the npm package page shows provenance for the release;
 - provenance points to this repository and `release.yml`;
-- the GitHub Release tag points to the reviewed commit;
+- the GitHub Release tag points to the exact final merged commit;
 - a stable GitHub Release carries the **Latest** label;
 - the GitHub Release is marked immutable;
 - the changelog and published package behavior agree.

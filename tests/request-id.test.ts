@@ -36,44 +36,67 @@ describe("request IDs", () => {
     expect(generate).toHaveBeenCalledTimes(3);
   });
 
-  it("applies a custom validator only to syntactically valid incoming IDs", () => {
-    const validateIncoming = vi.fn((value: string) => value.startsWith("allowed-"));
+  it("lets a custom validator broaden caller IDs only within Node's header boundary", () => {
+    const validateIncoming = vi.fn(
+      (value: string) => value.startsWith("allowed-") || value === "id:42" || value.length === 129,
+    );
     const generator = createRequestIdGenerator({
       requestIdHeader: "X-Correlation-ID",
       validateIncoming,
       generate: () => "generated",
     });
     expect(generator(request(["x-correlation-id", "allowed-caller"]))).toBe("allowed-caller");
+    expect(generator(request(["x-correlation-id", "id:42"]))).toBe("id:42");
+    expect(generator(request(["x-correlation-id", "x".repeat(129)]))).toBe("x".repeat(129));
     expect(generator(request(["x-correlation-id", "other"]))).toBe("generated");
     expect(generator(request(["x-correlation-id", "not valid"]))).toBe("generated");
-    expect(validateIncoming).toHaveBeenCalledTimes(2);
+    expect(generator(request(["x-correlation-id", "line\nbreak"]))).toBe("generated");
+    expect(validateIncoming).toHaveBeenCalledTimes(5);
     expect(validateIncoming).toHaveBeenNthCalledWith(1, "allowed-caller");
-    expect(validateIncoming).toHaveBeenNthCalledWith(2, "other");
+    expect(validateIncoming).toHaveBeenNthCalledWith(4, "other");
   });
 
-  it("returns a valid custom ID when generation recovers on the second attempt", () => {
-    const generate = vi
-      .fn<() => string>()
-      .mockImplementationOnce(() => {
-        throw new Error("temporary generator failure");
-      })
-      .mockReturnValueOnce("second-attempt");
+  it("applies the RFC field-content boundary before a custom validator", () => {
+    const validateIncoming = vi.fn(() => true);
+    const generator = createRequestIdGenerator({ validateIncoming, generate: () => "generated" });
+
+    expect(generator(request(["x-request-id", "tenant request"]))).toBe("tenant request");
+    expect(generator(request(["x-request-id", "tenant\trequest"]))).toBe("tenant\trequest");
+    expect(generator(request(["x-request-id", "tenant,request"]))).toBe("tenant,request");
+    expect(generator(request(["x-request-id", " tenant"]))).toBe("generated");
+    expect(generator(request(["x-request-id", "tenant\t"]))).toBe("generated");
+
+    expect(validateIncoming).toHaveBeenCalledTimes(3);
+    expect(validateIncoming).toHaveBeenNthCalledWith(1, "tenant request");
+    expect(validateIncoming).toHaveBeenNthCalledWith(2, "tenant\trequest");
+    expect(validateIncoming).toHaveBeenNthCalledWith(3, "tenant,request");
+  });
+
+  it("invokes a failing custom generator once before the package fallback", () => {
+    const generate = vi.fn<() => string>(() => {
+      throw new Error("generator failure");
+    });
     const generator = createRequestIdGenerator({ generate });
 
-    expect(generator(request([]))).toBe("second-attempt");
-    expect(generate).toHaveBeenCalledTimes(2);
+    expect(isValidRequestId(generator(request([])))).toBe(true);
+    expect(generate).toHaveBeenCalledOnce();
   });
 
-  it("contains callback failures, retries twice, and uses a safe fallback", () => {
+  it.each(["invalid value", 42])("invokes a generator returning %j once before fallback", (candidate) => {
+    const generate = vi.fn<() => string>(() => candidate as never);
+    const generator = createRequestIdGenerator({ generate });
+
+    expect(isValidRequestId(generator(request([])))).toBe(true);
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
+  it("contains callback failures and uses a safe fallback", () => {
     let attempts = 0;
     let validations = 0;
     const generator = createRequestIdGenerator({
       generate: () => {
         attempts += 1;
-        if (attempts === 1) {
-          throw new Error("boom");
-        }
-        return "invalid value";
+        throw new Error("boom");
       },
       validateIncoming: () => {
         validations += 1;
@@ -81,7 +104,7 @@ describe("request IDs", () => {
       },
     });
     const value = generator(request(["x-request-id", "caller"]));
-    expect(attempts).toBe(2);
+    expect(attempts).toBe(1);
     expect(validations).toBe(1);
     expect(isValidRequestId(value)).toBe(true);
   });

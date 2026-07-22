@@ -1,4 +1,4 @@
-import { parseTraceparent } from "fastify-observability";
+import { parseTraceparent, resolveTraceContextLevel, type TraceContext } from "fastify-observability";
 import { describe, expect, it } from "vitest";
 import { attachTracestate } from "../src/trace.js";
 
@@ -6,6 +6,15 @@ const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const PARENT_ID = "00f067aa0ba902b7";
 
 describe("traceparent", () => {
+  it("defaults to Level 1 and rejects unsupported levels", () => {
+    expect(resolveTraceContextLevel()).toBe(1);
+    expect(resolveTraceContextLevel(1)).toBe(1);
+    expect(resolveTraceContextLevel(2)).toBe(2);
+    for (const value of [0, 3, "2", true, null]) {
+      expect(() => resolveTraceContextLevel(value)).toThrow("traceContextLevel must be 1 or 2");
+    }
+  });
+
   it("parses v00 and derives sampled from bit zero", () => {
     const trace = parseTraceparent(`00-${TRACE_ID}-${PARENT_ID}-03`);
     expect(trace).toEqual({
@@ -14,18 +23,56 @@ describe("traceparent", () => {
       flags: "03",
       sampled: true,
       traceparent: `00-${TRACE_ID}-${PARENT_ID}-03`,
+      traceContextLevel: 1,
     });
     expect(Object.isFrozen(trace)).toBe(true);
     expect(parseTraceparent(`00-${TRACE_ID}-${PARENT_ID}-02`)?.sampled).toBe(false);
+    expect(parseTraceparent(`00-${TRACE_ID}-${PARENT_ID}-02`)?.traceIdRandom).toBeUndefined();
   });
 
-  it("accepts future framing up to the wire-length boundary", () => {
+  it.each([
+    ["00", false, false],
+    ["01", true, false],
+    ["02", false, true],
+    ["03", true, true],
+    ["04", false, false],
+    ["0a", false, true],
+    ["20", false, false],
+  ] as const)("projects Level 2 flags %s", (flags, sampled, random) => {
+    const trace = parseTraceparent(`00-${TRACE_ID}-${PARENT_ID}-${flags}`, 2);
+    expect(trace).toMatchObject({ flags, sampled, traceContextLevel: 2, traceIdRandom: random });
+  });
+
+  it("accepts opaque future framing beyond the former package boundary", () => {
     expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01`)).not.toBeNull();
     expect(parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-01-extra`)).not.toBeNull();
     const maximum = `01-${TRACE_ID}-${PARENT_ID}-01-${"x".repeat(456)}`;
     expect(maximum).toHaveLength(512);
     expect(parseTraceparent(maximum)).not.toBeNull();
-    expect(parseTraceparent(`${maximum}x`)).toBeNull();
+    expect(parseTraceparent(`${maximum}x`)).not.toBeNull();
+  });
+
+  it.each([
+    ["02", false],
+    ["03", true],
+  ] as const)("does not assign Level 2 random semantics to future-version flags %s", (flags, sampled) => {
+    const trace = parseTraceparent(`01-${TRACE_ID}-${PARENT_ID}-${flags}-opaque`, 2);
+    expect(trace).toMatchObject({ flags, sampled, traceContextLevel: 2 });
+    expect(trace?.traceIdRandom).toBeUndefined();
+  });
+
+  it("leaves future fields opaque while enforcing the native HTTP field boundary", () => {
+    const base = `01-${TRACE_ID}-${PARENT_ID}-01`;
+    expect(parseTraceparent(`${base}- `)).not.toBeNull();
+    expect(parseTraceparent(`${base}-~`)).not.toBeNull();
+    expect(parseTraceparent(`${base}-opaque-ümlaut`)).not.toBeNull();
+    expect(parseTraceparent(`${base}-\u001f`)).toBeNull();
+    expect(parseTraceparent(`${base}-\u007f`)).toBeNull();
+    const maximum = `${base}-${"x".repeat(456)}`;
+    expect(maximum).toHaveLength(512);
+    expect(parseTraceparent(maximum)).not.toBeNull();
+    expect(parseTraceparent(`${maximum}x`)).not.toBeNull();
+    expect(parseTraceparent(`${base}-opaque-€`)).toBeNull();
   });
 
   it.each([2, 35, 52])("rejects corruption at required separator index %i", (separatorIndex) => {
@@ -46,7 +93,6 @@ describe("traceparent", () => {
     ["an all-zero trace ID", `00-${"0".repeat(32)}-${PARENT_ID}-01`],
     ["an all-zero parent ID", `00-${TRACE_ID}-${"0".repeat(16)}-01`],
     ["future data without its separator", `01-${TRACE_ID}-${PARENT_ID}-01x`],
-    ["a control character in future data", `01-${TRACE_ID}-${PARENT_ID}-01-\u001f`],
   ])("rejects %s", (_name, value) => {
     expect(parseTraceparent(value)).toBeNull();
   });
@@ -62,6 +108,19 @@ describe("tracestate", () => {
     const result = attachTracestate(trace, ["vendor=one", "1tenant@system=value"]);
     expect(result.tracestate).toBe("vendor=one,1tenant@system=value");
     expect(Object.isFrozen(result)).toBe(true);
+  });
+
+  it("distinguishes a missing tracestate from one empty field-line", () => {
+    expect(attachTracestate(trace, [])).toBe(trace);
+    expect(attachTracestate(trace, [""])).toEqual({ ...trace, tracestate: "" });
+  });
+
+  it("rejects a removed v1 trace context without an explicit grammar level", () => {
+    const { traceContextLevel: _removed, ...v1Trace } = trace;
+
+    expect(() => attachTracestate(v1Trace as TraceContext, ["vendor=value"])).toThrow(
+      "traceContextLevel must be 1 or 2",
+    );
   });
 
   it.each([
@@ -81,10 +140,16 @@ describe("tracestate", () => {
   });
 
   it("accepts optional whitespace and empty list members", () => {
-    expect(attachTracestate(trace, [" , a=1, "]).tracestate).toBe(" , a=1, ");
+    expect(attachTracestate(trace, [" , a=1, "]).tracestate).toBe(",a=1,");
   });
 
-  it("enforces the exact member, value, and total-length boundaries", () => {
+  it("canonicalizes split field-lines and separator whitespace", () => {
+    expect(attachTracestate(trace, ["  vendor1=value1  ", "\tvendor2= value2\t"]).tracestate).toBe(
+      "vendor1=value1,vendor2= value2",
+    );
+  });
+
+  it("enforces member and value grammar without treating 512 as a rejection ceiling", () => {
     const thirtyTwoMembers = Array.from({ length: 32 }, (_, index) => `a${index}=1`).join(",");
     expect(attachTracestate(trace, [thirtyTwoMembers]).tracestate).toBe(thirtyTwoMembers);
     expect(attachTracestate(trace, [`${thirtyTwoMembers},overflow=1`])).toBe(trace);
@@ -93,10 +158,9 @@ describe("tracestate", () => {
     expect(attachTracestate(trace, [maximumValue]).tracestate).toBe(maximumValue);
     expect(attachTracestate(trace, [`a=${"x".repeat(257)}`])).toBe(trace);
 
-    const maximumTotal = `a=${"x".repeat(256)},b=${"y".repeat(251)}`;
-    expect(maximumTotal).toHaveLength(512);
-    expect(attachTracestate(trace, [maximumTotal]).tracestate).toBe(maximumTotal);
-    expect(attachTracestate(trace, [`${maximumTotal}x`])).toBe(trace);
+    const overFormerMinimum = `${"a".repeat(256)}=${"y".repeat(256)}`;
+    expect(overFormerMinimum).toHaveLength(513);
+    expect(attachTracestate(trace, [overFormerMinimum]).tracestate).toBe(overFormerMinimum);
   });
 
   it("enforces simple and multi-tenant key-length boundaries", () => {
@@ -110,5 +174,20 @@ describe("tracestate", () => {
     expect(attachTracestate(trace, [`${maximumMultiTenantKey}=1`]).tracestate).toBe(`${maximumMultiTenantKey}=1`);
     expect(attachTracestate(trace, [`${maximumTenant}x@${maximumSystem}=1`])).toBe(trace);
     expect(attachTracestate(trace, [`${maximumTenant}@${maximumSystem}y=1`])).toBe(trace);
+  });
+
+  it("uses the Level 2 key grammar selected by the trace context", () => {
+    const level2 = parseTraceparent(`00-${TRACE_ID}-${PARENT_ID}-03`, 2);
+    if (level2 === null) {
+      throw new Error("test trace must parse");
+    }
+    expect(attachTracestate(level2, ["1=value"]).tracestate).toBe("1=value");
+    expect(attachTracestate(level2, ["tenant@sub@system=value"]).tracestate).toBe("tenant@sub@system=value");
+    for (const value of ["@vendor=value", "Vendor=value", "vendor=first,vendor=second"]) {
+      expect(attachTracestate(level2, [value])).toBe(level2);
+    }
+    expect(attachTracestate(level2, ["vendor=value \t, \t1@two= leading\t"]).tracestate).toBe(
+      "vendor=value,1@two= leading",
+    );
   });
 });

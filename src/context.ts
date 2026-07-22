@@ -1,12 +1,13 @@
 import type { FastifyRequest } from "fastify";
 import { normalizeHeaderName, rawHeaderValues } from "./request-id.js";
-import { attachTracestate, parseTraceparent } from "./trace.js";
+import { attachTracestate, parseTraceparent, resolveTraceContextLevel } from "./trace.js";
 import type {
   ExtraFields,
   FastifyObservabilityOptions,
   LevelForStatus,
   LoggingPreset,
   RequestObservability,
+  TraceContextLevel,
 } from "./types.js";
 
 export interface NormalizedOptions {
@@ -15,7 +16,12 @@ export interface NormalizedOptions {
   readonly responseHeader: string | false;
   readonly traceHeader: string;
   readonly tracestateHeader: string;
-  readonly message: string;
+  readonly traceContextLevel: TraceContextLevel;
+  readonly capturePath: boolean;
+  readonly capturePeerIp: boolean;
+  readonly captureUserAgent: boolean;
+  readonly captureError: boolean;
+  readonly clock: () => number;
   readonly levelForStatus?: LevelForStatus;
   readonly extraFields?: ExtraFields;
 }
@@ -25,10 +31,22 @@ const OPTION_KEYS = new Set([
   "responseHeader",
   "traceHeader",
   "tracestateHeader",
-  "message",
+  "traceContextLevel",
+  "capturePath",
+  "capturePeerIp",
+  "captureUserAgent",
+  "captureError",
+  "clock",
   "levelForStatus",
   "extraFields",
 ]);
+
+function booleanOption(name: string, value: unknown): boolean {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new TypeError(`${name} must be a boolean`);
+  }
+  return value ?? false;
+}
 
 export function normalizeOptions(options: FastifyObservabilityOptions, preset: LoggingPreset): NormalizedOptions {
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
@@ -53,9 +71,8 @@ export function normalizeOptions(options: FastifyObservabilityOptions, preset: L
   if (responseHeader !== false && (responseHeader === traceHeader || responseHeader === tracestateHeader)) {
     throw new TypeError("responseHeader must not collide with trace headers");
   }
-  const message = options.message ?? "request completed";
-  if (typeof message !== "string" || message.trim().length === 0) {
-    throw new TypeError("message must be a non-empty string");
+  if (options.clock !== undefined && typeof options.clock !== "function") {
+    throw new TypeError("clock must be a function");
   }
   if (options.levelForStatus !== undefined && typeof options.levelForStatus !== "function") {
     throw new TypeError("levelForStatus must be a function");
@@ -69,7 +86,12 @@ export function normalizeOptions(options: FastifyObservabilityOptions, preset: L
     responseHeader,
     traceHeader,
     tracestateHeader,
-    message,
+    traceContextLevel: resolveTraceContextLevel(options.traceContextLevel),
+    capturePath: booleanOption("capturePath", options.capturePath),
+    capturePeerIp: booleanOption("capturePeerIp", options.capturePeerIp),
+    captureUserAgent: booleanOption("captureUserAgent", options.captureUserAgent),
+    captureError: booleanOption("captureError", options.captureError),
+    clock: options.clock ?? (() => performance.now()),
   };
   if (options.levelForStatus !== undefined) {
     Object.defineProperty(normalized, "levelForStatus", { value: options.levelForStatus, enumerable: true });
@@ -82,7 +104,7 @@ export function normalizeOptions(options: FastifyObservabilityOptions, preset: L
 
 export function createRequestObservability(request: FastifyRequest, options: NormalizedOptions): RequestObservability {
   const traceparentValues = rawHeaderValues(request.raw, options.traceHeader);
-  let trace = traceparentValues.length === 1 ? parseTraceparent(traceparentValues[0]) : null;
+  let trace = traceparentValues.length === 1 ? parseTraceparent(traceparentValues[0], options.traceContextLevel) : null;
   if (trace !== null) {
     trace = attachTracestate(trace, rawHeaderValues(request.raw, options.tracestateHeader));
   }

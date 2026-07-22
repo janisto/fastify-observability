@@ -9,6 +9,7 @@ import plugin, {
   type ObservabilityLoggerOptions,
   type RequestObservability,
   type TraceContext,
+  type TraceContextLevel,
 } from "fastify-observability";
 import type { Bindings } from "pino";
 import { describe, expect, expectTypeOf, it } from "vitest";
@@ -22,6 +23,11 @@ describe("public types", () => {
     expectTypeOf(plugin).toBeFunction();
     expectTypeOf<AccessLogLevel>().toEqualTypeOf<"debug" | "info" | "warn" | "error">();
     expectTypeOf<LoggingPreset>().toEqualTypeOf<"default" | "gcp" | "aws" | "azure">();
+    expectTypeOf<TraceContextLevel>().toEqualTypeOf<1 | 2>();
+    expectTypeOf<import("fastify-observability").FastifyObservabilityOptions["traceContextLevel"]>().toEqualTypeOf<
+      TraceContextLevel | undefined
+    >();
+    expectTypeOf<TraceContext["traceContextLevel"]>().toEqualTypeOf<TraceContextLevel>();
     expectTypeOf<ObservabilityLoggerOptions["preset"]>().toEqualTypeOf<LoggingPreset | undefined>();
     expectTypeOf<ObservabilityLoggerOptions["level"]>().toEqualTypeOf<
       "trace" | "debug" | "info" | "warn" | "error" | "fatal" | "silent" | undefined
@@ -32,7 +38,14 @@ describe("public types", () => {
     expectTypeOf(createObservabilityLogger().child({ component: "catalog" })).toEqualTypeOf<ObservabilityLogger>();
     expectTypeOf(createObservabilityLogger().bindings()).toEqualTypeOf<Bindings>();
     const register = (app: FastifyInstance) => {
-      app.register(plugin, { levelForStatus: () => "debug" });
+      app.register(plugin, {
+        capturePath: true,
+        capturePeerIp: true,
+        captureUserAgent: true,
+        traceContextLevel: 2,
+        clock: () => 0,
+        levelForStatus: () => "debug",
+      });
       app.get("/", (request) => {
         expectTypeOf(request.observability).toEqualTypeOf<RequestObservability>();
         return request.observability.requestId;
@@ -57,6 +70,14 @@ describe("public types", () => {
   });
 
   it("keeps context readonly", () => {
+    // @ts-expect-error v2 TraceContext requires the selected grammar level
+    const removedV1Shape: TraceContext = {
+      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+      parentId: "00f067aa0ba902b7",
+      flags: "01",
+      sampled: true,
+      traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    };
     const compileOnly = (context: RequestObservability, trace: TraceContext) => {
       // @ts-expect-error public request context is readonly
       context.requestId = "changed";
@@ -64,6 +85,7 @@ describe("public types", () => {
       trace.traceId = "changed";
     };
     expectTypeOf(compileOnly).toBeFunction();
+    expectTypeOf(removedV1Shape).toEqualTypeOf<TraceContext>();
   });
 
   it("keeps opinionated logger and preset controls out of the wrong public surface", () => {
@@ -71,6 +93,7 @@ describe("public types", () => {
       const logger = createObservabilityLogger();
       // @ts-expect-error createObservabilityLogger owns the Pino message key
       createObservabilityLogger({ messageKey: "msg" });
+
       // @ts-expect-error canonical logger bindings are immutable
       logger.setBindings({ component: "changed" });
       // @ts-expect-error the package owns Pino's child-registration callback
@@ -79,6 +102,8 @@ describe("public types", () => {
       logger.level = "verbose";
       // @ts-expect-error preset selection belongs to createObservabilityLogger, not plugin options
       app.register(plugin, { preset: "gcp" });
+      // @ts-expect-error v2 owns the terminal message and has no v1 message option
+      app.register(plugin, { message: "request completed" });
       // @ts-expect-error extraFields is deliberately synchronous
       app.register(plugin, { extraFields: async () => ({ component: "catalog" }) });
     };

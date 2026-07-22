@@ -2,6 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 
 export type LoggingPreset = "default" | "gcp" | "aws" | "azure";
 export type AccessLogLevel = "debug" | "info" | "warn" | "error";
+export type TraceContextLevel = 1 | 2;
 
 export interface TraceContext {
   readonly traceId: string;
@@ -10,6 +11,8 @@ export interface TraceContext {
   readonly sampled: boolean;
   readonly traceparent: string;
   readonly tracestate?: string;
+  readonly traceContextLevel: TraceContextLevel;
+  readonly traceIdRandom?: boolean;
 }
 
 export interface RequestObservability {
@@ -26,7 +29,12 @@ export interface FastifyObservabilityOptions {
   responseHeader?: string | false;
   traceHeader?: string;
   tracestateHeader?: string;
-  message?: string;
+  traceContextLevel?: TraceContextLevel;
+  capturePath?: boolean;
+  capturePeerIp?: boolean;
+  captureUserAgent?: boolean;
+  captureError?: boolean;
+  clock?: () => number;
   levelForStatus?: LevelForStatus;
   extraFields?: ExtraFields;
 }

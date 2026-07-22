@@ -1,0 +1,18 @@
+{
+  "name": "fastify-observability-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.13.0",
+  "scripts": {
+    "build": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "fastify": "5.10.0",
+    "fastify-observability": "file:./fastify-observability.tgz"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
+  }
+}

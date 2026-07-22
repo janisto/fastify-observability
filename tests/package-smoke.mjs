@@ -105,9 +105,21 @@ import fastifyObservability, {
   createRequestIdGenerator,
   type ObservabilityLogger,
   type RequestObservability,
+	type TraceContext,
+  type TraceContextLevel,
 } from "fastify-observability";
 
 const logger: ObservabilityLogger = createObservabilityLogger({ level: "silent" });
+const traceContextLevel: TraceContextLevel = 2;
+// @ts-expect-error v2 TraceContext requires the selected grammar level
+const removedV1TraceShape: TraceContext = {
+  traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+  parentId: "00f067aa0ba902b7",
+  flags: "01",
+  sampled: true,
+  traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+};
+void removedV1TraceShape;
 const child = logger.child({ component: "package-smoke" });
 // @ts-expect-error canonical logger binding mutation is blocked at runtime
 child.setBindings({ component: "changed" });
@@ -117,7 +129,7 @@ const app = Fastify({
   genReqId: createRequestIdGenerator(),
   logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: "request_id" }),
 });
-await app.register(fastifyObservability);
+await app.register(fastifyObservability, { traceContextLevel });
 app.get("/", (request): RequestObservability => request.observability);
 await app.close();
 `,
@@ -131,12 +143,14 @@ import fastifyObservability, {
   createObservabilityLogger,
   createRequestIdGenerator,
   parseTraceparent,
+  resolveTraceContextLevel,
 } from "fastify-observability";
 
 const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
 const parentId = "00f067aa0ba902b7";
-const traceparent = "00-" + traceId + "-" + parentId + "-01";
-assert.equal(parseTraceparent(traceparent)?.traceId, traceId);
+const traceparent = "00-" + traceId + "-" + parentId + "-03";
+assert.equal(resolveTraceContextLevel(2), 2);
+assert.equal(parseTraceparent(traceparent, 2)?.traceIdRandom, true);
 
 const chunks = [];
 const destination = new Writable({
@@ -154,7 +168,7 @@ const app = Fastify({
 });
 
 try {
-  await app.register(fastifyObservability);
+  await app.register(fastifyObservability, { capturePath: true, traceContextLevel: 2 });
   app.get(
     "/smoke/:id",
     { schema: { operationId: "package_smoke" } },
@@ -170,8 +184,11 @@ try {
   const body = response.json();
   assert.equal(body.context.requestId, "package-smoke");
   assert.equal(body.context.correlationId, traceId);
+  assert.equal(body.context.traceContext.traceContextLevel, 2);
+  assert.equal(body.context.traceContext.traceIdRandom, true);
   assert.equal(body.bindings.request_id, "package-smoke");
   assert.equal(body.bindings["logging.googleapis.com/trace"], traceId);
+  assert.equal(body.bindings.trace_id_random, true);
   assert.equal(body.bindings["logging.googleapis.com/spanId"], undefined);
 
   const records = chunks.join("").trim().split("\\n").filter(Boolean).map(JSON.parse);
@@ -179,10 +196,11 @@ try {
   assert.equal(terminal.length, 1);
   assert.equal(terminal[0].severity, "INFO");
   assert.equal(terminal[0].path, "/smoke/42");
-  assert.equal(terminal[0].path_template, "/smoke/:id");
+  assert.equal(terminal[0].path_template, "/smoke/{id}");
   assert.equal(terminal[0].operation_id, "package_smoke");
   assert.equal(terminal[0].status, 200);
   assert.equal(terminal[0]["logging.googleapis.com/trace"], traceId);
+  assert.equal(terminal[0].trace_id_random, true);
   assert.equal(terminal[0]["logging.googleapis.com/spanId"], undefined);
   assert.equal(terminal[0].httpRequest.requestUrl, "/smoke/42");
 } finally {

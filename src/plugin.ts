@@ -1,9 +1,16 @@
 import type { FastifyBaseLogger, FastifyPluginCallback, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import type { Logger } from "pino";
-import { type AccessState, emitAccessRecord, observeStream, requestUserAgent } from "./access.js";
+import { type AccessState, canonicalPeerIp, emitAccessRecord, observeStream, requestUserAgent } from "./access.js";
 import { createRequestObservability, normalizeOptions } from "./context.js";
-import { bindingValuesEqual, canonicalLoggerProfile, createCanonicalChild, PROTECTED_LOG_FIELDS } from "./logger.js";
+import {
+  bindingValuesEqual,
+  canonicalLoggerProfile,
+  createCanonicalChild,
+  isProtectedLogField,
+  markTrustedLogFields,
+  type ObservabilityLoggerProfile,
+} from "./logger.js";
 import { correlationFields } from "./presets.js";
 import { consumeRequestIdHandshake } from "./request-id.js";
 import type { FastifyObservabilityOptions, RequestObservability } from "./types.js";
@@ -14,6 +21,23 @@ const STATE = Symbol("fastify-observability.state");
 type InternalRequest = FastifyRequest & { [STATE]?: AccessState };
 
 type PinoLogger = FastifyBaseLogger & Logger;
+
+function startClock(
+  configured: () => number,
+  diagnose: (kind: string, message: string) => void,
+): { clock: () => number; started: number } {
+  try {
+    const started = configured();
+    if (!Number.isFinite(started)) {
+      throw new TypeError("clock returned a non-finite value");
+    }
+    return { clock: configured, started };
+  } catch {
+    diagnose("clock", "clock failed at request start; using the runtime monotonic clock");
+    const clock = () => performance.now();
+    return { clock, started: clock() };
+  }
+}
 
 function isPinoLogger(logger: FastifyBaseLogger): logger is PinoLogger {
   // The package marker establishes construction; these public methods verify the object still has Pino's contract.
@@ -40,9 +64,12 @@ function snapshotBindings(logger: PinoLogger): Record<string, unknown> {
   return snapshot;
 }
 
-function validateRootBindings(bindings: Readonly<Record<string, unknown>>): void {
+function validateRootBindings(
+  bindings: Readonly<Record<string, unknown>>,
+  preset: ObservabilityLoggerProfile["preset"],
+): void {
   for (const key of Object.keys(bindings)) {
-    if (PROTECTED_LOG_FIELDS.has(key)) {
+    if (isProtectedLogField(key, preset)) {
       throw new Error(`fastify-observability reserves Pino base binding "${key}"`);
     }
   }
@@ -104,7 +131,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       throw new Error("fastify-observability requires loggerInstance from createObservabilityLogger()");
     }
     const rootBindings = snapshotBindings(rootLogger);
-    validateRootBindings(rootBindings);
+    validateRootBindings(rootBindings, profile.preset);
     const options = normalizeOptions(rawOptions, profile.preset);
     fastify.decorate(INSTALLED, true);
     fastify.decorateRequest("observability");
@@ -117,7 +144,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       }
       diagnostics.add(kind);
       try {
-        rootLogger.warn({ observability_diagnostic: kind }, `fastify-observability: ${message}`);
+        rootLogger.warn(markTrustedLogFields({ observability_diagnostic: kind }), `fastify-observability: ${message}`);
         return;
       } catch {
         // Fall through only when the configured Pino logger itself failed synchronously.
@@ -130,7 +157,7 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
     };
 
     fastify.addHook("onRequest", (request, reply, next) => {
-      const started = performance.now();
+      const { clock, started } = startClock(options.clock, diagnose);
       if (!consumeRequestIdHandshake(request.raw, request.id, options.requestIdHeader)) {
         diagnose("request_id_setup", "validated request-ID generator handshake failed");
         next(new Error("fastify-observability request-ID setup is unsafe"));
@@ -191,36 +218,51 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
           diagnose("logger_setup", "Pino request logger setup failed; package access record omitted");
         }
       }
-      let remoteIp: string | undefined;
-      try {
-        const candidate = request.ip;
-        remoteIp = typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
-      } catch {
-        diagnose("remote_ip", "remote IP resolution failed; remote_ip was omitted");
+      let peerIp: string | undefined;
+      if (options.capturePeerIp) {
+        try {
+          const candidate = request.raw.socket.remoteAddress;
+          peerIp = canonicalPeerIp(candidate);
+        } catch {
+          diagnose("peer_ip", "direct peer IP resolution failed; peer_ip was omitted");
+        }
       }
       const state: AccessState = {
         started,
+        clock,
         request,
         reply,
         options,
         diagnose,
         logger,
         loggerBindings,
-        remoteIp,
-        userAgent: requestUserAgent(request),
+        peerIp,
+        userAgent: options.captureUserAgent ? requestUserAgent(request) : undefined,
+        streamFailed: false,
         emitted: false,
         suppressAccess,
         ...(inspectLoggerBindings === undefined ? {} : { inspectLoggerBindings }),
       };
       (request as InternalRequest)[STATE] = state;
+      // The Writable `pipe` event identifies the source Fastify actually sends, after every onSend transformation.
+      const pipeListener = (source: unknown) => observeStream(state, source);
+      state.pipeListener = pipeListener;
+      try {
+        reply.raw.once("pipe", pipeListener);
+      } catch {
+        delete state.pipeListener;
+        diagnose("stream_listener", "response pipe observation failed; the response was preserved");
+      }
       const closeListener = () => {
-        if (!reply.raw.writableFinished) {
-          emitAccessRecord(
-            state,
-            reply.raw.headersSent ? "response_aborted" : "request_aborted",
-            reply.raw.headersSent ? reply.raw.statusCode : undefined,
-          );
-        }
+        setImmediate(() => {
+          if (!state.emitted && !reply.raw.writableFinished) {
+            emitAccessRecord(
+              state,
+              state.streamFailed ? "body_error" : "response_dropped",
+              reply.raw.headersSent ? reply.raw.statusCode : undefined,
+            );
+          }
+        });
       };
       state.closeListener = closeListener;
       reply.raw.once("close", closeListener);
@@ -235,14 +277,6 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       next();
     });
 
-    fastify.addHook("onSend", (request, _reply, payload, next) => {
-      const state = (request as InternalRequest)[STATE];
-      if (state !== undefined) {
-        observeStream(state, payload);
-      }
-      next(null, payload);
-    });
-
     fastify.addHook("onResponse", (request, reply, next) => {
       const state = (request as InternalRequest)[STATE];
       if (state !== undefined) {
@@ -251,10 +285,10 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       next();
     });
 
-    fastify.addHook("onTimeout", (request, _reply, next) => {
+    fastify.addHook("onTimeout", (request, reply, next) => {
       const state = (request as InternalRequest)[STATE];
       if (state !== undefined) {
-        emitAccessRecord(state, "timeout");
+        emitAccessRecord(state, "timeout", reply.raw.headersSent ? reply.raw.statusCode : undefined);
       }
       next();
     });
@@ -263,11 +297,12 @@ const implementation: FastifyPluginCallback<FastifyObservabilityOptions> = (fast
       const state = (request as InternalRequest)[STATE];
       if (state !== undefined) {
         const sent = state.reply.raw.headersSent;
-        emitAccessRecord(
-          state,
-          sent ? "response_aborted" : "request_aborted",
-          sent ? state.reply.raw.statusCode : undefined,
-        );
+        const reason = state.streamFailed
+          ? "body_error"
+          : request.raw.complete
+            ? "response_dropped"
+            : "client_disconnect";
+        emitAccessRecord(state, reason, sent ? state.reply.raw.statusCode : undefined);
       }
       next();
     });

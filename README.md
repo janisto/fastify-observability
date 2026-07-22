@@ -33,6 +33,30 @@ coupling application code to a cloud logging SDK. The package focuses on
 structured logging and request correlation: it does not create spans, configure
 OpenTelemetry, or ship logs to a backend.
 
+## Why newline-delimited JSON
+
+The package-created Pino logger emits newline-delimited JSON (NDJSON, also
+called JSON Lines): each application or access event is one compact,
+self-contained JSON object followed by one LF (`\n`). The output is a stream of
+objects, never a JSON array.
+
+NDJSON is deliberate for production logging:
+
+- Agents such as Vector, Fluent Bit, and Datadog can parse entries as a stream
+  with bounded memory instead of waiting for a closing array bracket.
+- Append-only output needs no array brackets, commas, whole-file rewrites, or
+  trailing-comma coordination. Each logger call submits one complete encoded
+  line; the destination and record size determine OS-level write atomicity.
+- A crash or interrupted final write can damage the incomplete last line, while
+  previously completed lines remain independently parseable.
+- Analytics systems can split large inputs on newline boundaries and process
+  independent records in parallel.
+- Standard tools work directly on the stream, for example
+  `head -n 20 app.log | jq -r '.message'`.
+
+Standard JSON arrays are suited to complete documents; NDJSON retains JSON's
+structured fields while providing framing designed for continuous log streams.
+
 ## Package scope
 
 The package creates the Pino logger used by Fastify. Destinations and transports
@@ -146,13 +170,14 @@ destination or one custom target that performs its own fan-out. The `default`,
 `transport.targets`. This follows Pino 10's
 [level-formatter boundary](https://github.com/pinojs/pino/blob/v10.3.1/docs/api.md#formatters-object).
 
-The default is full-fidelity logging. No redaction is installed automatically,
-and observed errors retain Pino's standard type, message, stack, cause text, and
-enumerable error properties. Concrete path, remote IP, User-Agent, and provider
-fields are also retained when available.
+No redaction is installed automatically. Rich terminal-error capture, request
+path, direct peer IP, and User-Agent capture are independently disabled by
+default and require plugin opt-ins. With `captureError: true`, the native `err`
+field retains Pino's standard type, message, stack, cause text, and enumerable
+error properties and can contain sensitive application data.
 
 Redaction is explicit root policy. In addition to application-owned paths, it
-may target the privacy-bearing package fields `path`, `remote_ip`, `user_agent`,
+may target the privacy-bearing package fields `path`, `peer_ip`, `user_agent`,
 nested `err.*`, and nested `httpRequest.*`. Correlation, envelope, structural,
 top-level `err`, and top-level `httpRequest` fields remain protected. Direct,
 bracket, quoted-bracket, and wildcard path forms are validated consistently.
@@ -179,27 +204,38 @@ plugin options, so the logger envelope and provider fields cannot drift apart.
 | `responseHeader` | Request-ID header | Response request-ID header, or `false` |
 | `traceHeader` | `"traceparent"` | W3C trace context header |
 | `tracestateHeader` | `"tracestate"` | W3C vendor trace state header |
-| `message` | `"request completed"` | Terminal access-record message |
+| `traceContextLevel` | `1` | Pinned W3C grammar and flag semantics; `1` or explicit `2` |
+| `capturePath` | `false` | Include the exact nonempty query-free path exposed by Node's raw target, including `*`; no second percent-escape grammar is applied |
+| `capturePeerIp` | `false` | Include the canonical direct socket IP as `peer_ip` and GCP `remoteIp`; omit non-IP or zoned values |
+| `captureUserAgent` | `false` | Include one unambiguous User-Agent and GCP `userAgent` |
+| `captureError` | `false` | Include the native privacy-sensitive `err` field on abnormal terminal records |
+| `clock` | `performance.now` | Monotonic millisecond clock; primarily for deterministic tests |
 | `levelForStatus` | Built-in mapping | Synchronous status-to-level override |
 | `extraFields` | None | Synchronous application fields for the access record |
 
 Unknown options are rejected instead of being silently ignored.
 
 `createRequestIdGenerator()` accepts `requestIdHeader`, `generate`, and
-`validateIncoming`. `validateIncoming` narrows only caller-provided IDs; it does
-not reject an application generator's output or the package fallback. Every ID,
-regardless of source, must still pass the package baseline: 1–128 ASCII
-URI-unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `.`, `_`, or `~`).
+`validateIncoming`. `validateIncoming` applies only to caller-provided IDs; it
+does not reject an application generator's output or the package fallback.
+Without it, callers must pass the 1–128 ASCII URI-unreserved baseline. With it,
+the application may admit a broader RFC 9110 field-content value that Node can
+round-trip exactly through the response header and UTF-8 JSON writer, including
+punctuation, internal space or tab, and values longer than 128 bytes. Edge
+whitespace and unsafe framing are rejected before the callback. Generated and
+fallback IDs always retain the package baseline.
 
-Missing, empty, duplicate, oversized, non-ASCII, or invalid incoming values are
-replaced. A custom generator is tried twice and then failure-contained with a
-package fallback. When a custom request-ID header is used, pass the same name to
-the generator and plugin.
+Missing, empty, duplicate, or policy-invalid incoming values are replaced. A
+custom generator is tried once and then failure-contained with a package
+fallback. When a custom request-ID header is used, pass the same name to the
+generator and plugin.
 
-`isValidRequestId(value)` exposes the baseline check. `parseTraceparent(value)`
-exposes strict W3C parsing.
+`isValidRequestId(value)` exposes the baseline check. `parseTraceparent(value,
+level?)` exposes strict W3C parsing, and `resolveTraceContextLevel(value)`
+returns the effective supported level or throws for any value other than `1`
+or `2`.
 
-## Request context
+## Request and trace context
 
 The immutable context is available throughout Fastify's request lifecycle:
 
@@ -212,56 +248,86 @@ request.observability.traceContext;  // validated TraceContext | null
 The selected request ID is also `request.id`, the `request_id` Pino binding,
 and the configured response header.
 
-`traceparent` parsing rejects uppercase hex, zero IDs, duplicates, malformed
-delimiters, invalid version framing, and oversized input. Valid `tracestate`
-retains wire order while enforcing W3C key grammar, unique keys, 32 members, and
-512 bytes. Invalid trace input is ignored and correlation falls back to the
-request ID.
+`traceparent` parsing defaults to the pinned W3C Trace Context Level 1
+Recommendation and rejects uppercase hex, zero IDs, duplicates, malformed
+delimiters, invalid version framing, and unsafe native field content. Version
+`00` is exactly 55 characters; a dash-delimited future-version suffix is opaque
+and has no package-invented length ceiling. Valid `tracestate`
+field-lines retain wire order and are canonicalized by removing HTTP optional
+whitespace around members while enforcing the selected-level key grammar,
+unique keys, and 32 members. The package can propagate at least 512 characters
+and does not reject a valid 513-character value merely for crossing that
+boundary. Empty members are valid and count toward the member limit. Invalid
+trace input is ignored and correlation falls back to the request ID.
+
+Level 2 is explicit and immutable after plugin registration:
+
+```ts
+await app.register(fastifyObservability, { traceContextLevel: 2 });
+```
+
+Both levels preserve `trace_flags` and derive `trace_sampled` from bit zero.
+For version `00`, Level 2 additionally exposes `traceIdRandom` on the request
+trace context and emits `trace_id_random` from bit one. Level 1 deliberately
+omits the random field. Higher versions retain the sampled bit but do not assign
+meaning to the random bit. The flag reports caller input; it does not prove that
+this application generated a random trace ID.
 
 The incoming parent ID identifies the caller's span. The package does not claim
 that it is a span created by this service and does not emit a fake current-span
 field.
 
-## Terminal access record
+## Structured log contract
+
+### Terminal access record
 
 Normal, handled-error, and unhandled-error responses produce one terminal
-record in `onResponse`, using the final status sent on the wire. Timeouts,
-request aborts, response aborts, and observable response-stream failures share
-the same one-shot terminal guard.
+record in `onResponse`, using the final status sent on the wire. Authoritative
+client disconnects, timeouts, and observable response-stream failures share the
+same one-shot terminal guard.
 
 | Field | Meaning |
 | --- | --- |
-| `method` | HTTP method |
-| `path` | Concrete escaped path without a query string |
-| `path_template` | Matched Fastify route template; omitted for a normal 404 |
+| `method` | Fastify/Node parsed HTTP method |
+| `path` | Opt-in concrete escaped path without a query string |
+| `path_template` | Matched low-cardinality route template; simple Fastify forms use `{name}` and `{*path}`, richer authoritative native syntax is preserved, and normal 404s omit it |
 | `operation_id` | Explicit `schema.operationId` only |
 | `status` | Final status when trustworthy |
 | `duration_ms` | Non-negative monotonic duration including streaming |
-| `remote_ip` | `request.ip`, honoring the application's `trustProxy` policy |
-| `user_agent` | One unambiguous raw User-Agent value |
-| `terminal_reason` | `timeout`, `request_aborted`, or `response_aborted` |
-| `err` | Observed `Error`, including standard type, message, and stack by default |
+| `peer_ip` | Opt-in direct socket peer; forwarded and proxy-derived values are ignored |
+| `user_agent` | Opt-in single unambiguous text field value exposed by Node's HTTP parser |
+| `terminal_reason` | `timeout`, `client_disconnect`, `response_dropped`, or `body_error` |
+| `err` | Opt-in observed `Error` (`captureError: true`), including standard type, message, and stack |
 | `httpRequest` | GCP HTTP request object, on the GCP preset only |
 
-Queries, bodies, cookies, authorization, and arbitrary headers are never
-logged. Use `path_template` for low-cardinality aggregation; concrete `path`
-remains high-cardinality diagnostic data.
+The Node HTTP server rejects lowercase extension tokens such as `m-SEARCH`
+before Fastify creates a request object; Node HTTP clients can also canonicalize
+recognized methods before transmission. The package therefore records only the
+framework value and does not claim access to rejected wire spelling.
+
+Queries, bodies, cookies, authorization, forwarded IPs, and arbitrary headers
+are never logged. Use `path_template` for low-cardinality aggregation; opt-in
+concrete `path` remains high-cardinality diagnostic data.
+
+Fastify whole-segment `:name` parameters are emitted as `{name}` and its
+unnamed `*` catch-all is emitted as `{*path}`. Regex constraints are removed
+while the parameter name is retained. Richer optional or composite syntax is
+preserved from Fastify's authoritative matched-route template.
 
 That is deliberate terminal-schema selection, not hidden redaction. Fields an
 application explicitly passes to `app.log`, `request.log`, or `reply.log` are
 serialized normally unless the application configured root redaction or a
 serializer for that application-owned field.
 
-There is no default redaction. If an application's privacy policy requires
-censoring or removing error details, concrete paths, remote addresses, or user
-agents, configure the explicit root `redact` option and include both top-level
-and GCP `httpRequest.*` paths where applicable.
+There is no automatic redaction after `captureError` or another sensitive field
+is explicitly enabled. Configure the root `redact` option for any opted-in data
+that must be censored, including nested `err.*` and GCP `httpRequest.*` paths.
 
 Default levels are `error` for 5xx, `warn` for 4xx, and `info` otherwise.
-Timeouts and observed internal stream failures use `error`; connection aborts
-without an exposed error use `warn`. `levelForStatus` can return the public
-`AccessLogLevel` union: `debug | info | warn | error`. Pino must also enable the
-selected level.
+Every abnormal terminal reason uses `error`, including a disconnect without an
+exposed `Error`. `levelForStatus` applies only to normal responses and can
+return the public `AccessLogLevel` union: `debug | info | warn | error`. Pino
+must also enable the selected level.
 
 If none of the package access levels are enabled, the package performs no
 status-level callback, binding inspection, field construction, or extra-field
@@ -274,7 +340,7 @@ request/response, error, prototype, and diagnostic names are ignored. Async or
 otherwise invalid returns and callback failures produce one diagnostic and
 never alter the HTTP response.
 
-## Duplicate-field guarantee
+### Duplicate-field guarantee
 
 Pino pre-serializes child bindings. If a parent and child reuse a name, the raw
 line contains duplicate JSON names even though `bindings()` and `JSON.parse()`
@@ -283,10 +349,11 @@ show only the final value. Pino documents this
 The public `bindings()` method is necessary for inspection, but it is not
 sufficient proof by itself.
 
-For package terminal records, the supported configuration guarantees that
-every emitted package, provider, envelope, access, base, and extra field has
-exactly one top-level occurrence. Fields explicitly removed by root redaction
-are absent rather than duplicated:
+For records emitted through the canonical logger on the exact supported path
+and outside the opaque integration preconditions below, each package,
+provider, envelope, access, base, and extra field has exactly one top-level
+occurrence. Fields explicitly removed by root redaction are absent rather than
+duplicated:
 
 1. The factory rejects protected root bindings and uncontrolled envelope
    options.
@@ -299,15 +366,18 @@ are absent rather than duplicated:
    access logging.
 5. An application extra field equal to a stable root binding is reused; a
    conflicting extra field is omitted with one diagnostic.
-6. Tests inspect the raw JSON line before parsing it.
+6. Plain application event objects drop exact envelope, correlation, and
+   provider fields owned by the active preset before Pino serializes them.
+   Access-only fields and exact aliases owned only by an inactive preset remain
+   application data.
+7. Tests inspect the raw JSON line before parsing it.
 
-This guarantee covers records emitted by this package. Application log calls
-must not pass a key already bound on `request.log`; Pino itself permits that and
-will serialize both names. Replacing or mutating the logger, bypassing its
-guarded methods through Pino internals, custom or route-specific
-`childLoggerFactory` behavior, and downstream transports that rewrite records
-are outside the contract. The exact default Fastify child logger shape is the
-supported path.
+Opaque non-plain objects, serializer internals, and application-supplied
+pre-bound child fields cannot be safely rewritten and remain integration
+preconditions. Replacing or mutating the logger, bypassing its guarded methods
+through Pino internals, custom or route-specific `childLoggerFactory` behavior,
+and downstream transports that rewrite records are outside the contract. The
+exact default Fastify child logger shape is the supported path.
 
 ## Cloud presets
 
@@ -340,8 +410,8 @@ kind is emitted at most once per plugin instance. `stderr` is used only if Pino
 throws synchronously while writing the diagnostic. A `silent` or higher logger
 threshold filters diagnostics normally.
 
-Logger inspection, the package's `levelForStatus` and `extraFields` callbacks,
-remote-IP resolution, stream observation, and access emission are
+Logger inspection, the package's clock, `levelForStatus`, and `extraFields`
+callbacks, direct-peer resolution, stream observation, and access emission are
 failure-contained after Fastify has created the request. Unsafe constructor
 wiring and failures before Fastify enters the request lifecycle can still fail
 startup or the request.
@@ -384,6 +454,10 @@ compatibility contracts. Breaking changes require a new major release and
 migration guidance in [CHANGELOG.md](CHANGELOG.md). Deep imports are
 unsupported.
 
+Version 2 exposes no v1 option aliases or compatibility shims. Applications
+upgrading from 1.x must follow the
+[migration guide](CHANGELOG.md#migration-from-1x).
+
 Development requires [pnpm 11.13.0](https://pnpm.io/installation), pinned by
 the `packageManager` field, and [just](https://github.com/casey/just). With both
 installed, install the workflow linters on macOS and use the repository's
@@ -419,7 +493,7 @@ Releases use `pnpm stage publish`, GitHub OIDC, and npm trusted publishing
 without a stored npm write token. See
 [RELEASE.md](https://github.com/janisto/fastify-observability/blob/main/RELEASE.md).
 
-## Planned mutation testing
+## Mutation testing
 
 Mutation testing with
 [StrykerJS](https://github.com/stryker-mutator/stryker-js) is planned once
@@ -427,6 +501,18 @@ upstream [TypeScript 7 support](https://github.com/stryker-mutator/stryker-js/pu
 is merged and included in a release. Until then, Stryker is intentionally not
 installed and no `just mutation` recipe is provided. Add the dependencies,
 configuration, and Justfile recipe together when support is available.
+
+## Consumer image
+
+Run `just e2e-image observability-e2e-local:manual` to build a
+production-shaped consumer image from the exact checkout. The recipe prefers
+Podman and falls back to Docker.
+
+Building the image verifies packaging and integration only. It does not run the
+image, validate emitted logs, compare implementations, or approve a release.
+Optional independent tooling may exercise the package's documented public
+contract. Any audit result is informational and is never a publication
+requirement.
 
 ## References
 
@@ -443,22 +529,24 @@ configuration, and Justfile recipe together when support is available.
   the [child-logger duplicate-key caveat](https://github.com/pinojs/pino/blob/v10.3.1/docs/child-loggers.md#duplicate-keys-caveat),
   and [redaction](https://github.com/pinojs/pino/blob/v10.3.1/docs/redaction.md)
   define the logger behavior guarded by the package.
-- [W3C Trace Context](https://www.w3.org/TR/trace-context/) defines strict
-  `traceparent` and `tracestate` syntax and identifies `parent-id` as the
-  caller's span rather than a span created by this service.
-- [Google Cloud trace and log integration](https://docs.cloud.google.com/trace/docs/trace-log-integration)
+- [W3C Trace Context Level 1 Recommendation](https://www.w3.org/TR/2021/REC-trace-context-1-20211123/)
+  defines the default `traceparent` and `tracestate` contract.
+- [W3C Trace Context Level 2 Candidate Recommendation Draft](https://www.w3.org/TR/2024/CRD-trace-context-2-20240328/)
+  defines the explicit Level 2 key grammar and random trace-ID flag.
+- [Google Cloud trace and log integration](https://cloud.google.com/trace/docs/trace-log-integration)
   documents the bare `TRACE_ID` as the preferred trace field format.
-- [Google Cloud Trace release notes](https://docs.cloud.google.com/trace/docs/release-notes)
+- [Google Cloud Trace release notes](https://cloud.google.com/trace/docs/release-notes)
   record the January 26, 2026 change that made the trace ID preferred while
   retaining the full project resource name as a supported legacy format.
-- [Google Cloud structured logging](https://docs.cloud.google.com/logging/docs/structured-logging)
+- [Google Cloud structured logging](https://cloud.google.com/logging/docs/structured-logging)
   documents `severity`, `message`, `httpRequest`, and the special
   `logging.googleapis.com/*` JSON fields.
-- [AWS X-Ray trace IDs](https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html)
+- [AWS X-Ray trace IDs](https://docs.aws.amazon.com/xray/latest/devguide/xray-api-sendingdata.html#xray-api-traceids)
   document converting a W3C trace ID to `1-8hex-24hex` form.
 - [Azure Application Insights data model](https://learn.microsoft.com/en-us/azure/azure-monitor/app/data-model-complete)
-  documents `operation_Id` and `operation_ParentId` correlation fields.
+  defines `operation_Id` as the root-operation identifier and
+  `operation_ParentId` as the immediate-parent identifier.
 
 ## License
 
-MIT
+[MIT](LICENSE)

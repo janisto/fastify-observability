@@ -3,6 +3,8 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import {
   type AccessState,
+  canonicalPeerIp,
+  canonicalRouteTemplate,
   cleanupListeners,
   emitAccessRecord,
   observeStream,
@@ -13,14 +15,44 @@ import type { NormalizedOptions } from "../src/context.js";
 
 describe("access helpers", () => {
   it.each([
-    [undefined, "/"],
-    ["", "/"],
+    ["/health", "/health"],
+    ["/items/:item_id", "/items/{item_id}"],
+    [`/items/:${"a".repeat(65)}`, `/items/{${"a".repeat(65)}}`],
+    ["/items/:item_id(\\d+)", "/items/{item_id}"],
+    ["/choice/:id((?:foo|bar))", "/choice/{id}"],
+    ["/choice/:id([()a-z]+)", "/choice/{id}"],
+    ["/files/*", "/files/{*path}"],
+    ["*", "/{*path}"],
+    ["/items/:item_id?", "/items/:item_id?"],
+    ["/items/:item_id(foo)tail", "/items/:item_id(foo)tail"],
+    ["/items/:item_id.:format", "/items/:item_id.:format"],
+    ["/files/*/suffix", undefined],
+    ["/name::::verb", "/name::verb"],
+  ])("canonicalizes the current Fastify route form %s", (input, expected) => {
+    expect(canonicalRouteTemplate(input)).toBe(expected);
+  });
+
+  it.each([
+    [undefined, undefined],
+    ["", undefined],
     ["*", "*"],
     ["/items/a%3Fb?secret=yes", "/items/a%3Fb"],
-    ["https://attacker.example/path?secret=yes", "/path"],
-    ["http://[invalid", "/"],
-  ])("derives a private path from %s", (input, expected) => {
+    ["/items/bad%2", "/items/bad%2"],
+    ["/items#fragment", "/items"],
+    ["https://attacker.example/path?secret=yes", undefined],
+    ["http://[invalid", undefined],
+  ])("uses only a valid origin-form path from %s", (input, expected) => {
     expect(requestPath(input)).toBe(expected);
+  });
+
+  it.each([
+    ["192.0.2.10", "192.0.2.10"],
+    ["2001:0db8:0:0:0:0:0:1", "2001:db8::1"],
+    ["fe80::1%eth0", undefined],
+    ["internal.example", undefined],
+    ["", undefined],
+  ])("canonicalizes only a direct IP literal %s", (input, expected) => {
+    expect(canonicalPeerIp(input)).toBe(expected);
   });
 
   it("observes stream errors and removes listeners", () => {
@@ -37,6 +69,7 @@ describe("access helpers", () => {
     const error = new Error("stream failed");
     stream.emit("error", error);
     expect(state.error).toBe(error);
+    expect(state.streamFailed).toBe(true);
     cleanupListeners(state);
     expect(stream.listenerCount("error")).toBe(0);
     expect(raw.listenerCount("close")).toBe(0);
@@ -86,7 +119,14 @@ describe("access helpers", () => {
     const withHeaders = (rawHeaders: string[]) => ({ raw: { rawHeaders } }) as unknown as FastifyRequest;
 
     expect(requestUserAgent(withHeaders(["User-Agent", "catalog-client/1.0"]))).toBe("catalog-client/1.0");
+    expect(requestUserAgent(withHeaders(["User-Agent", "agent/1 component/2"]))).toBe("agent/1 component/2");
+    expect(requestUserAgent(withHeaders(["User-Agent", "agent\tcomment"]))).toBe("agent\tcomment");
+    expect(requestUserAgent(withHeaders(["User-Agent", " "]))).toBeUndefined();
+    expect(requestUserAgent(withHeaders(["User-Agent", " catalog-client/1.0"]))).toBeUndefined();
+    expect(requestUserAgent(withHeaders(["User-Agent", "catalog-client/1.0 "]))).toBeUndefined();
     expect(requestUserAgent(withHeaders(["User-Agent", "first", "user-agent", "second"]))).toBeUndefined();
+    expect(requestUserAgent(withHeaders(["User-Agent", ""]))).toBeUndefined();
+    expect(requestUserAgent(withHeaders(["User-Agent", "agent/1.0\nforged"]))).toBeUndefined();
     expect(requestUserAgent(withHeaders([]))).toBeUndefined();
   });
 
@@ -133,20 +173,27 @@ describe("access helpers", () => {
       responseHeader: "x-request-id",
       traceHeader: "traceparent",
       tracestateHeader: "tracestate",
-      message: "request completed",
+      traceContextLevel: 1,
+      capturePath: true,
+      capturePeerIp: true,
+      captureUserAgent: true,
+      captureError: false,
+      clock: () => performance.now(),
     });
     const logger = { ...logs, isLevelEnabled } as unknown as AccessState["logger"];
     return {
       state: {
         started: performance.now(),
+        clock: options.clock,
         request,
         reply,
         options,
         diagnose,
         logger,
         loggerBindings: {},
-        remoteIp: "127.0.0.1",
+        peerIp: "127.0.0.1",
         userAgent: undefined,
+        streamFailed: false,
         emitted: false,
         suppressAccess: false,
         ...overrides,
@@ -160,14 +207,15 @@ describe("access helpers", () => {
 
   it("emits abnormal terminal records at most once", () => {
     const { state, log, logs } = accessState();
-    emitAccessRecord(state, "request_aborted");
+    emitAccessRecord(state, "client_disconnect");
     emitAccessRecord(state, "response", 200);
     expect(log).toHaveBeenCalledTimes(1);
-    expect(logs.warn).toHaveBeenCalledOnce();
-    expect(log.mock.calls[0]?.[0]).toMatchObject({ terminal_reason: "request_aborted" });
+    expect(logs.error).toHaveBeenCalledOnce();
+    expect(logs.warn).not.toHaveBeenCalled();
+    expect(log.mock.calls[0]?.[0]).toMatchObject({ terminal_reason: "client_disconnect" });
   });
 
-  it("uses error level for timeout and captured stream errors", () => {
+  it("uses error level for every abnormal terminal reason", () => {
     const timeout = accessState();
     emitAccessRecord(timeout.state, "timeout");
     expect(timeout.logs.error).toHaveBeenCalledOnce();
@@ -175,11 +223,15 @@ describe("access helpers", () => {
     expect(timeout.log.mock.calls[0]?.[0]).toMatchObject({ terminal_reason: "timeout" });
 
     const streamError = new Error("broken");
-    const stream = accessState({ error: streamError });
-    emitAccessRecord(stream.state, "response_aborted", 200);
+    const base = accessState();
+    const stream = accessState({
+      error: streamError,
+      options: Object.freeze({ ...base.state.options, captureError: true }),
+    });
+    emitAccessRecord(stream.state, "body_error", 200);
     expect(stream.logs.error).toHaveBeenCalledOnce();
     expect(stream.logs.warn).not.toHaveBeenCalled();
-    expect(stream.log.mock.calls[0]?.[0]).toMatchObject({ status: 200, terminal_reason: "response_aborted" });
+    expect(stream.log.mock.calls[0]?.[0]).toMatchObject({ status: 200, terminal_reason: "body_error" });
     const fields = stream.log.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
     expect(fields?.["err"]).toBe(streamError);
   });
@@ -208,7 +260,7 @@ describe("access helpers", () => {
       ...sample.state,
       started: 1_000,
       options: { ...sample.state.options, preset: "gcp" as const },
-      remoteIp: "203.0.113.8",
+      peerIp: "203.0.113.8",
       userAgent: "catalog-client/1.0",
     };
 
@@ -221,17 +273,33 @@ describe("access helpers", () => {
       path_template: "/resource",
       status: 204,
       duration_ms: 1_500,
-      remote_ip: "203.0.113.8",
+      peer_ip: "203.0.113.8",
       user_agent: "catalog-client/1.0",
       httpRequest: {
         requestMethod: "GET",
         requestUrl: "/resource",
         status: 204,
-        latency: "1.5s",
+        latency: "1.500s",
         remoteIp: "203.0.113.8",
         userAgent: "catalog-client/1.0",
       },
     });
+  });
+
+  it.each([
+    [10, "0.010s"],
+    [12.5, "0.012500s"],
+  ] as const)("uses canonical ProtoJSON fractional width for %d ms", (durationMs, latency) => {
+    const sample = accessState({ started: 0, clock: () => durationMs });
+    const state = {
+      ...sample.state,
+      options: { ...sample.state.options, preset: "gcp" as const },
+    };
+
+    emitAccessRecord(state, "response", 200);
+
+    const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect((fields["httpRequest"] as Record<string, unknown>)["latency"]).toBe(latency);
   });
 
   it("rounds fractional milliseconds to the nearest protobuf nanosecond", () => {
@@ -250,6 +318,44 @@ describe("access helpers", () => {
     expect(fields?.["httpRequest"]).toMatchObject({ latency: "0.000000001s" });
   });
 
+  it("carries protobuf nanosecond rounding into the next second", () => {
+    const sample = accessState({
+      started: 0,
+      clock: () => 999.999_999_6,
+    });
+    const state = {
+      ...sample.state,
+      options: { ...sample.state.options, preset: "gcp" as const },
+    };
+
+    emitAccessRecord(state, "response", 200);
+
+    const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(fields["duration_ms"]).toBeCloseTo(999.999_999_6, 9);
+    expect((fields["httpRequest"] as Record<string, unknown>)["latency"]).toBe("1s");
+  });
+
+  it.each([
+    [315_576_000_000_000, 315_576_000_000_000, "315576000000s"],
+    [315_576_000_000_999, 315_576_000_000_999, "315576000000.999s"],
+    [315_576_000_001_000, 315_576_000_001_000, undefined],
+  ] as const)("projects GCP protobuf duration input %d without changing portable time", (elapsed, durationMs, latency) => {
+    const sample = accessState({
+      started: 0,
+      clock: () => elapsed,
+    });
+    const state = {
+      ...sample.state,
+      options: { ...sample.state.options, preset: "gcp" as const },
+    };
+
+    emitAccessRecord(state, "response", 200);
+
+    const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(fields["duration_ms"]).toBe(durationMs);
+    expect((fields["httpRequest"] as Record<string, unknown>)["latency"]).toBe(latency);
+  });
+
   it("clamps a negative duration to zero and omits an untrustworthy timeout status", () => {
     vi.spyOn(performance, "now").mockReturnValue(900);
     const sample = accessState();
@@ -257,7 +363,7 @@ describe("access helpers", () => {
       ...sample.state,
       started: 1_000,
       options: { ...sample.state.options, preset: "gcp" as const },
-      remoteIp: undefined,
+      peerIp: undefined,
     };
 
     emitAccessRecord(state, "timeout");
@@ -270,7 +376,7 @@ describe("access helpers", () => {
       httpRequest: { latency: "0s" },
     });
     expect(fields).not.toHaveProperty("status");
-    expect(fields).not.toHaveProperty("remote_ip");
+    expect(fields).not.toHaveProperty("peer_ip");
     expect(fields).not.toHaveProperty("user_agent");
     expect(fields["httpRequest"]).not.toHaveProperty("status");
     expect(fields["httpRequest"]).not.toHaveProperty("remoteIp");
@@ -279,6 +385,7 @@ describe("access helpers", () => {
 
   it("contains listener-cleanup failures and still emits the terminal record", () => {
     const closeListener = vi.fn();
+    const pipeListener = vi.fn();
     const streamErrorListener = vi.fn();
     const stateWithFailures = accessState({
       reply: {
@@ -289,6 +396,7 @@ describe("access helpers", () => {
         },
       } as unknown as FastifyReply,
       closeListener,
+      pipeListener,
       stream: {
         once: vi.fn(),
         removeListener: () => {
@@ -304,8 +412,10 @@ describe("access helpers", () => {
     expect(stateWithFailures.diagnose.mock.calls.map(([kind]) => kind)).toEqual([
       "close_listener_cleanup",
       "stream_listener_cleanup",
+      "stream_listener_cleanup",
     ]);
     expect(stateWithFailures.state.closeListener).toBeUndefined();
+    expect(stateWithFailures.state.pipeListener).toBeUndefined();
     expect(stateWithFailures.state.stream).toBeUndefined();
     expect(stateWithFailures.state.streamErrorListener).toBeUndefined();
   });
@@ -326,11 +436,35 @@ describe("access helpers", () => {
     expect(sample.log.mock.calls[0]?.[0]).not.toHaveProperty("operation_id");
   });
 
+  it("preserves a nonempty application-static operationId containing controls", () => {
+    const sample = accessState();
+    Reflect.set(sample.state.request.routeOptions, "schema", { operationId: "get_item\nforged" });
+
+    emitAccessRecord(sample.state, "response", 200);
+
+    expect(sample.logs.info).toHaveBeenCalledOnce();
+    expect(sample.log.mock.calls[0]?.[0]).toHaveProperty("operation_id", "get_item\nforged");
+  });
+
+  it("omits all route identity for an unmatched request even if fallback metadata is present", () => {
+    const sample = accessState();
+    Reflect.set(sample.state.request, "is404", true);
+    Reflect.set(sample.state.request.routeOptions, "url", "/fallback/:item_id");
+    Reflect.set(sample.state.request.routeOptions, "schema", { operationId: "fallback" });
+
+    emitAccessRecord(sample.state, "response", 404);
+
+    const fields = sample.log.mock.calls[0]?.[0];
+    expect(fields).not.toHaveProperty("path_template");
+    expect(fields).not.toHaveProperty("operation_id");
+  });
+
   it("does not evaluate bindings or application callbacks after access suppression", () => {
     const inspectLoggerBindings = vi.fn(() => ({}));
     const levelForStatus = vi.fn(() => "debug" as const);
     const extraFields = vi.fn(() => ({ unexpected: true }));
     const closeListener = vi.fn();
+    const pipeListener = vi.fn();
     const streamErrorListener = vi.fn();
     const stream = new EventEmitter();
     const suppressed = accessState({
@@ -338,10 +472,12 @@ describe("access helpers", () => {
       inspectLoggerBindings,
     });
     suppressed.state.reply.raw.on("close", closeListener);
+    suppressed.state.reply.raw.on("pipe", pipeListener);
     stream.on("error", streamErrorListener);
     const state = {
       ...suppressed.state,
       closeListener,
+      pipeListener,
       stream,
       streamErrorListener,
       options: { ...suppressed.state.options, levelForStatus, extraFields },
@@ -356,8 +492,10 @@ describe("access helpers", () => {
     expect(extraFields).not.toHaveBeenCalled();
     expect(suppressed.diagnose).not.toHaveBeenCalled();
     expect(state.reply.raw.listenerCount("close")).toBe(0);
+    expect(state.reply.raw.listenerCount("pipe")).toBe(0);
     expect(stream.listenerCount("error")).toBe(0);
     expect(state.closeListener).toBeUndefined();
+    expect(state.pipeListener).toBeUndefined();
     expect(state.stream).toBeUndefined();
     expect(state.streamErrorListener).toBeUndefined();
     expect(state.emitted).toBe(true);

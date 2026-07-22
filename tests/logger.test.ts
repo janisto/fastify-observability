@@ -2,6 +2,7 @@ import { type EventEmitter, once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Writable } from "node:stream";
 import Fastify, { type FastifyInstance, LogController } from "fastify";
 import fastifyObservability, { createObservabilityLogger, createRequestIdGenerator } from "fastify-observability";
 import pino from "pino";
@@ -17,6 +18,49 @@ function requiredFastifyOptions() {
 }
 
 describe("canonical Pino logger", () => {
+  it("writes each event as one LF-terminated NDJSON object", () => {
+    const writes: string[] = [];
+    const destination = new Writable({
+      write(chunk, _encoding, callback) {
+        writes.push(chunk.toString());
+        callback();
+      },
+    });
+    const logger = createObservabilityLogger({ destination });
+
+    logger.info("first ✓\nlogical message");
+    logger.error("second message");
+
+    expect(writes).toHaveLength(2);
+    const messages = writes.map((write) => {
+      expect(write.endsWith("\n")).toBe(true);
+      expect(write).not.toContain("\r");
+      const line = write.slice(0, -1);
+      expect(line).not.toContain("\n");
+      const record = JSON.parse(line) as unknown;
+      expect(record).toBeTypeOf("object");
+      expect(Array.isArray(record)).toBe(false);
+      return (record as { message: string }).message;
+    });
+    expect(messages).toEqual(["first ✓\nlogical message", "second message"]);
+  });
+
+  it("keeps concurrent NDJSON records atomic", async () => {
+    const stream = new JsonLineStream();
+    const logger = createObservabilityLogger({ destination: stream });
+    const writes = Array.from({ length: 200 }, (_, index) =>
+      Promise.resolve().then(() => logger.info({ record_id: `record-${index}` }, "concurrent")),
+    );
+
+    await Promise.all(writes);
+
+    expect(stream.lines).toHaveLength(200);
+    expect(new Set(stream.records.map((record) => record["record_id"]))).toEqual(
+      new Set(Array.from({ length: 200 }, (_, index) => `record-${index}`)),
+    );
+    expect(stream.records.every((record) => record["message"] === "concurrent")).toBe(true);
+  });
+
   it("owns the envelope and preserves nested bindings without duplicate top-level names", () => {
     const stream = new JsonLineStream();
     const logger = createObservabilityLogger({
@@ -25,7 +69,7 @@ describe("canonical Pino logger", () => {
       base: { component: "catalog", service: { name: "api", labels: ["public"] } },
       destination: stream,
     });
-    const child = logger.child({ request_id: "fixed" });
+    const child = logger.child({ tenant_id: "fixed" });
     expect(logger.bindings()).toMatchObject({
       component: "catalog",
       service: { name: "api", labels: ["public"] },
@@ -33,7 +77,7 @@ describe("canonical Pino logger", () => {
     expect(child.bindings()).toMatchObject({
       component: "catalog",
       service: { name: "api", labels: ["public"] },
-      request_id: "fixed",
+      tenant_id: "fixed",
     });
     child.info({ item_id: "42" }, "item loaded");
 
@@ -43,14 +87,14 @@ describe("canonical Pino logger", () => {
       message: "item loaded",
       component: "catalog",
       service: { name: "api", labels: ["public"] },
-      request_id: "fixed",
+      tenant_id: "fixed",
       item_id: "42",
     });
     const line = stream.lines[0];
     if (line === undefined) {
       throw new Error("expected one raw Pino line");
     }
-    for (const key of ["severity", "message", "component", "service", "request_id", "item_id"]) {
+    for (const key of ["severity", "message", "component", "service", "tenant_id", "item_id"]) {
       expect(topLevelKeyOccurrences(line, key)).toBe(1);
     }
     expect(topLevelKeyOccurrences(line, "msg")).toBe(0);
@@ -59,14 +103,14 @@ describe("canonical Pino logger", () => {
 
   it("blocks binding mutation and repeated bindings on every canonical child", () => {
     const logger = createObservabilityLogger({ destination: new JsonLineStream() });
-    const child = logger.child({ request_id: "fixed" });
+    const child = logger.child({ tenant_id: "fixed" });
 
     expect(() =>
       (child as unknown as { setBindings(bindings: Record<string, unknown>): void }).setBindings({
         request_id: "changed",
       }),
     ).toThrow("do not allow setBindings");
-    expect(() => child.child({ request_id: "duplicate" })).toThrow('duplicate binding "request_id"');
+    expect(() => child.child({ tenant_id: "duplicate" })).toThrow('duplicate binding "tenant_id"');
     expect(() => logger.child({ tenant: "second" }).child({ tenant: "duplicate" })).toThrow(
       'duplicate binding "tenant"',
     );
@@ -222,7 +266,6 @@ describe("canonical Pino logger", () => {
     "time",
     "timestamp",
     "level",
-    "severity",
     "msg",
     "message",
     "pid",
@@ -239,7 +282,6 @@ describe("canonical Pino logger", () => {
     "time",
     "timestamp",
     "level",
-    "severity",
     "msg",
     "message",
     "pid",
@@ -252,23 +294,17 @@ describe("canonical Pino logger", () => {
     "parent_id",
     "trace_flags",
     "trace_sampled",
-    "logging.googleapis.com/trace",
-    "logging.googleapis.com/trace_sampled",
-    "logging.googleapis.com/spanId",
-    "xray_trace_id",
-    "operation_Id",
-    "operation_ParentId",
+    "trace_id_random",
     "method",
     "path",
     "path_template",
     "operation_id",
     "status",
     "duration_ms",
-    "remote_ip",
+    "peer_ip",
     "user_agent",
     "terminal_reason",
     "err",
-    "httpRequest",
     "serializers",
     "formatters",
     "customLevels",
@@ -276,6 +312,77 @@ describe("canonical Pino logger", () => {
     expect(() => createObservabilityLogger({ base: { [key]: "unsafe" } })).toThrow(
       `reserves Pino base binding "${key}"`,
     );
+  });
+
+  it.each([
+    ["gcp", "severity"],
+    ["gcp", "httpRequest"],
+    ["gcp", "logging.googleapis.com/trace"],
+    ["gcp", "logging.googleapis.com/trace_sampled"],
+    ["aws", "xray_trace_id"],
+    ["azure", "operation_Id"],
+    ["azure", "operation_ParentId"],
+  ] as const)("rejects the %s-owned base binding %s", (preset, key) => {
+    expect(() => createObservabilityLogger({ preset, base: { [key]: "unsafe" } })).toThrow(
+      `reserves Pino base binding "${key}"`,
+    );
+  });
+
+  it.each([
+    ["default", "severity"],
+    ["default", "httpRequest"],
+    ["default", "logging.googleapis.com/trace"],
+    ["default", "xray_trace_id"],
+    ["gcp", "operation_Id"],
+    ["aws", "logging.googleapis.com/trace"],
+    ["azure", "xray_trace_id"],
+  ] as const)("preserves the %s-inactive base binding %s", (preset, key) => {
+    const stream = new JsonLineStream();
+    const logger = createObservabilityLogger({ preset, base: { [key]: "application-value" }, destination: stream });
+
+    logger.info("application event");
+
+    expect(stream.records[0]?.[key]).toBe("application-value");
+  });
+
+  it("preserves profile-shaped child bindings that Pino treats as ordinary fields", () => {
+    const stream = new JsonLineStream();
+    const logger = createObservabilityLogger({ preset: "gcp", destination: stream });
+
+    logger.child({ xray_trace_id: "application-trace" }).info("child event");
+
+    const defaultLogger = createObservabilityLogger({ destination: stream });
+    defaultLogger.child({ severity: "application-severity" }).info("default child event");
+
+    expect(stream.records[0]).toMatchObject({
+      severity: "INFO",
+      xray_trace_id: "application-trace",
+    });
+    expect(stream.records[1]).toMatchObject({ level: 30, severity: "application-severity" });
+  });
+
+  it("preserves non-owned provider-looking and custom base bindings", () => {
+    const stream = new JsonLineStream();
+    const logger = createObservabilityLogger({
+      base: {
+        "logging.googleapis.com/spanId": "application-span",
+        "logging.googleapis.com/future": "future-value",
+        remote_ip: "application-value",
+        "obs.component": "catalog",
+        _obs_internal: "application-value",
+      },
+      destination: stream,
+    });
+
+    logger.info("application event");
+
+    expect(stream.records[0]).toMatchObject({
+      "logging.googleapis.com/spanId": "application-span",
+      "logging.googleapis.com/future": "future-value",
+      remote_ip: "application-value",
+      "obs.component": "catalog",
+      _obs_internal: "application-value",
+    });
   });
 
   it.each([
@@ -434,8 +541,6 @@ describe("canonical Pino logger", () => {
     '[ "message" ]',
     "err",
     "[err]",
-    "httpRequest",
-    '["httpRequest"]',
     "[*]",
     "[ * ]",
     '["*"]',
@@ -444,6 +549,10 @@ describe("canonical Pino logger", () => {
     ".*",
   ])("rejects protected root redaction path %s", (path) => {
     expect(() => createObservabilityLogger({ redact: [path] })).toThrow("does not allow redaction");
+  });
+
+  it.each(["httpRequest", '["httpRequest"]'])("rejects the GCP-owned root redaction path %s", (path) => {
+    expect(() => createObservabilityLogger({ preset: "gcp", redact: [path] })).toThrow("does not allow redaction");
   });
 
   it("rejects every redaction override on a canonical child", () => {

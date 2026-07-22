@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
-import { validateHeaderName } from "node:http";
+import { validateHeaderName, validateHeaderValue } from "node:http";
 import type { Http2ServerRequest } from "node:http2";
 import type { RequestIdGeneratorOptions } from "./types.js";
 
@@ -46,14 +46,26 @@ export function rawHeaderValues(request: RawRequest, headerName: string): string
 }
 
 function validIncomingRequestId(value: string, validateIncoming: ((value: string) => boolean) | undefined): boolean {
-  if (!isValidRequestId(value)) {
-    return false;
-  }
   if (validateIncoming === undefined) {
-    return true;
+    return isValidRequestId(value);
+  }
+  if (!isNativeFieldContent(value)) {
+    return false;
   }
   try {
     return validateIncoming(value) === true;
+  } catch {
+    return false;
+  }
+}
+
+export function isNativeFieldContent(value: string): boolean {
+  if (value.length === 0 || /^[\t ]|[\t ]$/.test(value)) {
+    return false;
+  }
+  try {
+    validateHeaderValue("x-request-id", value);
+    return true;
   } catch {
     return false;
   }
@@ -78,15 +90,13 @@ function safeFallbackRequestId(): string {
 
 function generateRequestId(generate: (() => string) | undefined): string {
   if (generate !== undefined) {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const candidate = generate();
-        if (isValidRequestId(candidate)) {
-          return candidate;
-        }
-      } catch {
-        // Application callbacks are untrusted; retry once, then use the safe fallback.
+    try {
+      const candidate = generate();
+      if (isValidRequestId(candidate)) {
+        return candidate;
       }
+    } catch {
+      // Application callbacks are untrusted; use the package fallback.
     }
   }
   return safeFallbackRequestId();

@@ -5,7 +5,7 @@ import { accessRecords, buildTestApp } from "./helpers.js";
 
 const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const PARENT_ID = "00f067aa0ba902b7";
-const TRACEPARENT = `00-${TRACE_ID}-${PARENT_ID}-01`;
+const TRACEPARENT = `00-${TRACE_ID}-${PARENT_ID}-03`;
 
 function bindings(logger: FastifyBaseLogger): Record<string, unknown> {
   const read = Reflect.get(logger, "bindings");
@@ -43,7 +43,17 @@ describe("examples", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.headers["x-request-id"]).toBe("example-request");
-      expect(response.json()).toMatchObject({ requestId: "example-request", correlationId: TRACE_ID });
+      const context = response.json<{
+        requestId: string;
+        correlationId: string;
+        traceContext: { traceContextLevel: number; traceIdRandom?: boolean };
+      }>();
+      expect(context).toMatchObject({
+        requestId: "example-request",
+        correlationId: TRACE_ID,
+        traceContext: { traceContextLevel: 1 },
+      });
+      expect(context.traceContext.traceIdRandom).toBeUndefined();
       expect(canonicalLoggerProfile(app.log)).toEqual({ preset });
       expect(app.hasRequestDecorator("observability")).toBe(true);
       expect(app.hasRoute({ method: "GET", url: "/" })).toBe(false);
@@ -52,9 +62,10 @@ describe("examples", () => {
         correlation_id: TRACE_ID,
         trace_id: TRACE_ID,
         parent_id: PARENT_ID,
-        trace_flags: "01",
+        trace_flags: "03",
         trace_sampled: true,
       });
+      expect(requestBindings?.["trace_id_random"]).toBeUndefined();
       const providerFields: Record<string, Record<string, unknown>> = {
         default: {},
         gcp: {
