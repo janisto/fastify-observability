@@ -23,76 +23,77 @@ const providerExampleModules = [
 ] as const;
 
 describe("examples", () => {
-  it.each(
-    providerExampleModules,
-  )("runs the documented %s request path with only the %s preset", async (_name, preset, load) => {
-    vi.resetModules();
-    const [{ app }, { canonicalLoggerProfile }] = await Promise.all([load(), import("../src/logger.js")]);
-    let requestBindings: Record<string, unknown> | undefined;
-    try {
-      Reflect.set(app.log, "level", "silent");
-      app.get("/__observability_probe", (request) => {
-        requestBindings = bindings(request.log);
-        return request.observability;
-      });
-      await app.ready();
-      const response = await app.inject({
-        url: "/__observability_probe",
-        headers: { "x-request-id": "example-request", traceparent: TRACEPARENT },
-      });
+  it.each(providerExampleModules)(
+    "runs the documented %s request path with only the %s preset",
+    async (_name, preset, load) => {
+      vi.resetModules();
+      const [{ app }, { canonicalLoggerProfile }] = await Promise.all([load(), import("../src/logger.js")]);
+      let requestBindings: Record<string, unknown> | undefined;
+      try {
+        Reflect.set(app.log, "level", "silent");
+        app.get("/__observability_probe", (request) => {
+          requestBindings = bindings(request.log);
+          return request.observability;
+        });
+        await app.ready();
+        const response = await app.inject({
+          url: "/__observability_probe",
+          headers: { "x-request-id": "example-request", traceparent: TRACEPARENT },
+        });
 
-      expect(response.statusCode).toBe(200);
-      expect(response.headers["x-request-id"]).toBe("example-request");
-      const context = response.json<{
-        requestId: string;
-        correlationId: string;
-        traceContext: { traceContextLevel: number; traceIdRandom?: boolean };
-      }>();
-      expect(context).toMatchObject({
-        requestId: "example-request",
-        correlationId: TRACE_ID,
-        traceContext: { traceContextLevel: 1 },
-      });
-      expect(context.traceContext.traceIdRandom).toBeUndefined();
-      expect(canonicalLoggerProfile(app.log)).toEqual({ preset });
-      expect(app.hasRequestDecorator("observability")).toBe(true);
-      expect(app.hasRoute({ method: "GET", url: "/" })).toBe(false);
-      expect(requestBindings).toMatchObject({
-        request_id: "example-request",
-        correlation_id: TRACE_ID,
-        trace_id: TRACE_ID,
-        parent_id: PARENT_ID,
-        trace_flags: "03",
-        trace_sampled: true,
-      });
-      expect(requestBindings?.["trace_id_random"]).toBeUndefined();
-      const providerFields: Record<string, Record<string, unknown>> = {
-        default: {},
-        gcp: {
-          "logging.googleapis.com/trace": TRACE_ID,
-          "logging.googleapis.com/trace_sampled": true,
-        },
-        aws: { xray_trace_id: `1-${TRACE_ID.slice(0, 8)}-${TRACE_ID.slice(8)}` },
-        azure: { operation_Id: TRACE_ID, operation_ParentId: PARENT_ID },
-      };
-      expect(requestBindings).toMatchObject(providerFields[preset] ?? {});
-      const allProviderKeys = [
-        "logging.googleapis.com/trace",
-        "logging.googleapis.com/trace_sampled",
-        "logging.googleapis.com/spanId",
-        "xray_trace_id",
-        "operation_Id",
-        "operation_ParentId",
-      ];
-      for (const key of allProviderKeys) {
-        if (!Object.hasOwn(providerFields[preset] ?? {}, key)) {
-          expect(requestBindings?.[key]).toBeUndefined();
+        expect(response.statusCode).toBe(200);
+        expect(response.headers["x-request-id"]).toBe("example-request");
+        const context = response.json<{
+          requestId: string;
+          correlationId: string;
+          traceContext: { traceContextLevel: number; traceIdRandom?: boolean };
+        }>();
+        expect(context).toMatchObject({
+          requestId: "example-request",
+          correlationId: TRACE_ID,
+          traceContext: { traceContextLevel: 1 },
+        });
+        expect(context.traceContext.traceIdRandom).toBeUndefined();
+        expect(canonicalLoggerProfile(app.log)).toEqual({ preset });
+        expect(app.hasRequestDecorator("observability")).toBe(true);
+        expect(app.hasRoute({ method: "GET", url: "/" })).toBe(false);
+        expect(requestBindings).toMatchObject({
+          request_id: "example-request",
+          correlation_id: TRACE_ID,
+          trace_id: TRACE_ID,
+          parent_id: PARENT_ID,
+          trace_flags: "03",
+          trace_sampled: true,
+        });
+        expect(requestBindings?.["trace_id_random"]).toBeUndefined();
+        const providerFields: Record<string, Record<string, unknown>> = {
+          default: {},
+          gcp: {
+            "logging.googleapis.com/trace": TRACE_ID,
+            "logging.googleapis.com/trace_sampled": true,
+          },
+          aws: { xray_trace_id: `1-${TRACE_ID.slice(0, 8)}-${TRACE_ID.slice(8)}` },
+          azure: { operation_Id: TRACE_ID, operation_ParentId: PARENT_ID },
+        };
+        expect(requestBindings).toMatchObject(providerFields[preset] ?? {});
+        const allProviderKeys = [
+          "logging.googleapis.com/trace",
+          "logging.googleapis.com/trace_sampled",
+          "logging.googleapis.com/spanId",
+          "xray_trace_id",
+          "operation_Id",
+          "operation_ParentId",
+        ];
+        for (const key of allProviderKeys) {
+          if (!Object.hasOwn(providerFields[preset] ?? {}, key)) {
+            expect(requestBindings?.[key]).toBeUndefined();
+          }
         }
+      } finally {
+        await app.close();
       }
-    } finally {
-      await app.close();
-    }
-  });
+    },
+  );
 
   it("preserves structured fields, levels, errors, and request bindings through the local wrapper", async () => {
     const { app, records } = await buildTestApp({}, { preset: "gcp", level: "trace" });
