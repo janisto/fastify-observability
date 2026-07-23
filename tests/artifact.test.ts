@@ -10,7 +10,6 @@ describe("package contract", () => {
       main: "./dist/index.js",
       types: "./dist/index.d.ts",
       engines: { node: ">=24" },
-      packageManager: "pnpm@11.13.0",
     });
     expect(packageJson.files).toEqual(["dist", "CHANGELOG.md"]);
     expect(packageJson.dependencies).toEqual({ "fastify-plugin": "^6.0.0", pino: "^10.3.1" });

@@ -503,67 +503,69 @@ describe("Fastify integration", () => {
     }
   });
 
-  it.each([
-    "aws",
-    "azure",
-  ] as const)("omits %s provider correlation when duplicate traceparent lines are ambiguous", async (preset) => {
-    const { app, records } = await buildTestApp({ traceContextLevel: 2 }, { preset });
-    apps.push(app);
-    app.get("/", (request) => {
-      request.log.info("handler");
-      return { ok: true };
-    });
-
-    const response = await app.inject({
-      url: "/",
-      headers: {
-        "x-request-id": "duplicate-trace",
-        traceparent: [`00-${TRACE_ID}-${PARENT_ID}-03`, "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"],
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    for (const record of [records.find((candidate) => candidate.message === "handler"), accessRecords(records)[0]]) {
-      expect(record).toMatchObject({ request_id: "duplicate-trace", correlation_id: "duplicate-trace" });
-      for (const key of [
-        "trace_id",
-        "parent_id",
-        "trace_flags",
-        "trace_sampled",
-        "trace_id_random",
-        "xray_trace_id",
-        "operation_Id",
-        "operation_ParentId",
-      ]) {
-        expect(record?.[key]).toBeUndefined();
-      }
-    }
-  });
-
-  it.each([
-    "default",
-    "gcp",
-  ] as const)("uses final response status and omits rich observed error details by default for %s", async (preset) => {
-    const { app, lines, records } = await buildTestApp({}, { preset });
-    apps.push(app);
-    app.get("/translated", async () => {
-      const cause = Object.assign(new Error("root-cause-canary"), { code: "E_ROOT_CAUSE" });
-      throw Object.assign(new Error("translated-failure-canary", { cause }), {
-        metadata: { token: "error-token-canary" },
+  it.each(["aws", "azure"] as const)(
+    "omits %s provider correlation when duplicate traceparent lines are ambiguous",
+    async (preset) => {
+      const { app, records } = await buildTestApp({ traceContextLevel: 2 }, { preset });
+      apps.push(app);
+      app.get("/", (request) => {
+        request.log.info("handler");
+        return { ok: true };
       });
-    });
-    app.setErrorHandler((_error, _request, reply) => reply.code(418).send({ handled: true }));
-    const response = await app.inject("/translated");
-    expect(response.statusCode).toBe(418);
-    const access = accessRecords(records)[0];
-    expect(access).toMatchObject(preset === "gcp" ? { severity: "WARNING", status: 418 } : { level: 40, status: 418 });
-    expect(access).not.toHaveProperty("err");
-    const line = lines.find((candidate) => candidate.includes('"message":"request completed"'));
-    expect(line).toBeDefined();
-    expect(line).not.toContain("translated-failure-canary");
-    expect(line).not.toContain("root-cause-canary");
-    expect(line).not.toContain("error-token-canary");
-  });
+
+      const response = await app.inject({
+        url: "/",
+        headers: {
+          "x-request-id": "duplicate-trace",
+          traceparent: [`00-${TRACE_ID}-${PARENT_ID}-03`, "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      for (const record of [records.find((candidate) => candidate.message === "handler"), accessRecords(records)[0]]) {
+        expect(record).toMatchObject({ request_id: "duplicate-trace", correlation_id: "duplicate-trace" });
+        for (const key of [
+          "trace_id",
+          "parent_id",
+          "trace_flags",
+          "trace_sampled",
+          "trace_id_random",
+          "xray_trace_id",
+          "operation_Id",
+          "operation_ParentId",
+        ]) {
+          expect(record?.[key]).toBeUndefined();
+        }
+      }
+    },
+  );
+
+  it.each(["default", "gcp"] as const)(
+    "uses final response status and omits rich observed error details by default for %s",
+    async (preset) => {
+      const { app, lines, records } = await buildTestApp({}, { preset });
+      apps.push(app);
+      app.get("/translated", async () => {
+        const cause = Object.assign(new Error("root-cause-canary"), { code: "E_ROOT_CAUSE" });
+        throw Object.assign(new Error("translated-failure-canary", { cause }), {
+          metadata: { token: "error-token-canary" },
+        });
+      });
+      app.setErrorHandler((_error, _request, reply) => reply.code(418).send({ handled: true }));
+      const response = await app.inject("/translated");
+      expect(response.statusCode).toBe(418);
+      const access = accessRecords(records)[0];
+      expect(access).toMatchObject(
+        preset === "gcp" ? { severity: "WARNING", status: 418 } : { level: 40, status: 418 },
+      );
+      expect(access).not.toHaveProperty("err");
+      const line = lines.find((candidate) => candidate.includes('"message":"request completed"'));
+      expect(line).toBeDefined();
+      expect(line).not.toContain("translated-failure-canary");
+      expect(line).not.toContain("root-cause-canary");
+      expect(line).not.toContain("error-token-canary");
+    },
+  );
 
   it("emits rich terminal errors only with explicit capture and applies root redaction", async () => {
     const { app, lines, records } = await buildTestApp(

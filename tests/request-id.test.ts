@@ -11,19 +11,12 @@ describe("request IDs", () => {
     expect(isValidRequestId(value)).toBe(true);
   });
 
-  it.each([
-    undefined,
-    null,
-    1,
-    "",
-    "x".repeat(129),
-    "has space",
-    "comma,value",
-    "tracé",
-    "line\nbreak",
-  ])("rejects an invalid ID: %s", (value) => {
-    expect(isValidRequestId(value)).toBe(false);
-  });
+  it.each([undefined, null, 1, "", "x".repeat(129), "has space", "comma,value", "tracé", "line\nbreak"])(
+    "rejects an invalid ID: %s",
+    (value) => {
+      expect(isValidRequestId(value)).toBe(false);
+    },
+  );
 
   it("preserves one valid raw header and replaces duplicates", () => {
     const generate = vi.fn(() => "generated");

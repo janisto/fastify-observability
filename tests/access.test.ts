@@ -339,22 +339,25 @@ describe("access helpers", () => {
     [315_576_000_000_000, 315_576_000_000_000, "315576000000s"],
     [315_576_000_000_999, 315_576_000_000_999, "315576000000.999s"],
     [315_576_000_001_000, 315_576_000_001_000, undefined],
-  ] as const)("projects GCP protobuf duration input %d without changing portable time", (elapsed, durationMs, latency) => {
-    const sample = accessState({
-      started: 0,
-      clock: () => elapsed,
-    });
-    const state = {
-      ...sample.state,
-      options: { ...sample.state.options, preset: "gcp" as const },
-    };
+  ] as const)(
+    "projects GCP protobuf duration input %d without changing portable time",
+    (elapsed, durationMs, latency) => {
+      const sample = accessState({
+        started: 0,
+        clock: () => elapsed,
+      });
+      const state = {
+        ...sample.state,
+        options: { ...sample.state.options, preset: "gcp" as const },
+      };
 
-    emitAccessRecord(state, "response", 200);
+      emitAccessRecord(state, "response", 200);
 
-    const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(fields["duration_ms"]).toBe(durationMs);
-    expect((fields["httpRequest"] as Record<string, unknown>)["latency"]).toBe(latency);
-  });
+      const fields = sample.log.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(fields["duration_ms"]).toBe(durationMs);
+      expect((fields["httpRequest"] as Record<string, unknown>)["latency"]).toBe(latency);
+    },
+  );
 
   it("clamps a negative duration to zero and omits an untrustworthy timeout status", () => {
     vi.spyOn(performance, "now").mockReturnValue(900);

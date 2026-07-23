@@ -385,15 +385,13 @@ describe("canonical Pino logger", () => {
     });
   });
 
-  it.each([
-    "formatters",
-    "customLevels",
-    "msgPrefix",
-    "unknown",
-  ])("rejects the uncontrolled Pino child option %s", (key) => {
-    const logger = createObservabilityLogger({ destination: new JsonLineStream() });
-    expect(() => logger.child({}, { [key]: "unsafe" } as never)).toThrow(`do not allow child option "${key}"`);
-  });
+  it.each(["formatters", "customLevels", "msgPrefix", "unknown"])(
+    "rejects the uncontrolled Pino child option %s",
+    (key) => {
+      const logger = createObservabilityLogger({ destination: new JsonLineStream() });
+      expect(() => logger.child({}, { [key]: "unsafe" } as never)).toThrow(`do not allow child option "${key}"`);
+    },
+  );
 
   it("preserves a valid Pino child level override", () => {
     const stream = new JsonLineStream();
@@ -470,19 +468,14 @@ describe("canonical Pino logger", () => {
     expect(() => logger.child(bindings as never, options as never)).toThrow(message as string);
   });
 
-  it.each([
-    "messageKey",
-    "timestamp",
-    "formatters",
-    "hooks",
-    "mixin",
-    "nestedKey",
-    "onChild",
-  ])("rejects the uncontrolled Pino option %s", (key) => {
-    expect(() => createObservabilityLogger({ [key]: "unsafe" } as never)).toThrow(
-      `unsupported observability logger option "${key}"`,
-    );
-  });
+  it.each(["messageKey", "timestamp", "formatters", "hooks", "mixin", "nestedKey", "onChild"])(
+    "rejects the uncontrolled Pino option %s",
+    (key) => {
+      expect(() => createObservabilityLogger({ [key]: "unsafe" } as never)).toThrow(
+        `unsupported observability logger option "${key}"`,
+      );
+    },
+  );
 
   it.each([
     ["trace", "DEBUG"],
